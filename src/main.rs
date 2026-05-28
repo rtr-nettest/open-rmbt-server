@@ -19,10 +19,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Apply CLI overrides on top of the file config.
-    if let Some(n) = cli.num_workers  { config.num_workers = n; }
-    if let Some(l) = cli.log_level    { config.log_level   = l; }
-    if let Some(c) = cli.cert_path    { config.cert_path   = Some(c); }
-    if let Some(k) = cli.key_path     { config.key_path    = Some(k); }
+    if let Some(n) = cli.num_workers     { config.num_workers     = n; }
+    if let Some(l) = cli.log_level       { config.log_level       = l; }
+    if let Some(c) = cli.cert_path       { config.cert_path       = Some(c); }
+    if let Some(k) = cli.key_path        { config.key_path        = Some(k); }
+    if let Some(s) = cli.secret_key_path { config.secret_key_path = s; }
 
     // Initialise logging before anything else so all startup messages appear.
     if config.log_level != log::LevelFilter::Off {

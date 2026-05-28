@@ -100,24 +100,26 @@ pub fn read_secret_keys(path: &str) -> anyhow::Result<Vec<SecretKey>> {
 // ─── CLI argument parser ──────────────────────────────────────────────────────
 
 pub struct CliArgs {
-    pub tcp_addrs: Vec<SocketAddr>,
-    pub tls_addrs: Vec<SocketAddr>,
-    pub cert_path: Option<String>,
-    pub key_path:  Option<String>,
-    pub num_workers: Option<usize>,
-    pub log_level:   Option<LevelFilter>,
+    pub tcp_addrs:       Vec<SocketAddr>,
+    pub tls_addrs:       Vec<SocketAddr>,
+    pub cert_path:       Option<String>,
+    pub key_path:        Option<String>,
+    pub secret_key_path: Option<String>,
+    pub num_workers:     Option<usize>,
+    pub log_level:       Option<LevelFilter>,
 }
 
 /// Parse the command-line arguments and return overrides to apply on top of the
 /// file-based config.  Returns `None` if the process should exit (--help/-v).
 pub fn parse_cli(args: &[String], cfg: &Config) -> anyhow::Result<Option<CliArgs>> {
     let mut out = CliArgs {
-        tcp_addrs:   Vec::new(),
-        tls_addrs:   Vec::new(),
-        cert_path:   cfg.cert_path.clone(),
-        key_path:    cfg.key_path.clone(),
-        num_workers: None,
-        log_level:   None,
+        tcp_addrs:       Vec::new(),
+        tls_addrs:       Vec::new(),
+        cert_path:       cfg.cert_path.clone(),
+        key_path:        cfg.key_path.clone(),
+        secret_key_path: None,
+        num_workers:     None,
+        log_level:       None,
     };
 
     let mut i = 0;
@@ -135,8 +137,9 @@ pub fn parse_cli(args: &[String], cfg: &Config) -> anyhow::Result<Option<CliArgs
                     out.tls_addrs.push(parse_addr(&args[i])?);
                 }
             }
-            "-c" => { i += 1; if i < args.len() { out.cert_path = Some(args[i].clone()); } }
-            "-k" => { i += 1; if i < args.len() { out.key_path  = Some(args[i].clone()); } }
+            "-c" => { i += 1; if i < args.len() { out.cert_path       = Some(args[i].clone()); } }
+            "-k" => { i += 1; if i < args.len() { out.key_path        = Some(args[i].clone()); } }
+            "-S" => { i += 1; if i < args.len() { out.secret_key_path = Some(args[i].clone()); } }
             "-t" => {
                 i += 1;
                 if i < args.len() { out.num_workers = Some(args[i].parse()?); }
@@ -211,6 +214,7 @@ fn print_help() {
          \t-L ADDRESS   TLS listen address  (default: [::]:443 and 0.0.0.0:443)\n\
          \t-c PATH      TLS certificate file (PEM)\n\
          \t-k PATH      TLS private key file (PEM)\n\
+         \t-S PATH      Secret key file (default: secret.key)\n\
          \t-t N         Worker thread count  (default: 200)\n\
          \t-log LEVEL   Log level: info | debug | trace\n\
          \t-h, --help   Show this help\n\
