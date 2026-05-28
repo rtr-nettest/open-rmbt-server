@@ -4,6 +4,8 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
 use std::thread;
 use std::time::Duration;
 use log::{info, error, debug};
+use mio::{Events, Interest, Poll, Token};
+use mio::net::TcpListener as MioListener;
 
 use crate::config::{Config, SecretKey};
 use crate::config::parser::read_secret_keys;
@@ -119,59 +121,77 @@ impl Server {
         tcp_listeners: Vec<TcpListener>,
         tls_listeners: Vec<TcpListener>,
     ) -> io::Result<()> {
-        let all_listeners: Vec<(&TcpListener, bool)> =
-            tcp_listeners.iter().map(|l| (l, false))
-            .chain(tls_listeners.iter().map(|l| (l, true)))
+        // Collect and tag all listeners before converting to mio.
+        let all_std: Vec<(TcpListener, bool)> =
+            tcp_listeners.into_iter().map(|l| (l, false))
+            .chain(tls_listeners.into_iter().map(|l| (l, true)))
             .collect();
 
-        if all_listeners.is_empty() {
+        if all_std.is_empty() {
             return Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "no listeners bound"));
         }
 
-        // Switch all listeners to non-blocking so the accept loop can poll
-        // across multiple listeners without blocking on any single one.
-        for (listener, _) in &all_listeners {
-            listener.set_nonblocking(true)?;
-        }
+        // Convert to mio listeners.  mio requires non-blocking mode.
+        let mut mio_listeners: Vec<(MioListener, bool)> = all_std.into_iter()
+            .map(|(l, is_tls)| {
+                l.set_nonblocking(true)?;
+                Ok((MioListener::from_std(l), is_tls))
+            })
+            .collect::<io::Result<_>>()?;
 
-        info!("ready for connections ({} listener(s))", all_listeners.len());
+        // Register all listeners with a mio Poll instance.
+        // The thread will block in poll() until a connection arrives or the
+        // 100 ms timeout expires (used to check the shutdown flag).
+        let mut poll = Poll::new()?;
+        for (i, (listener, _)) in mio_listeners.iter_mut().enumerate() {
+            poll.registry().register(listener, Token(i), Interest::READABLE)?;
+        }
+        let mut events = Events::with_capacity(16);
+
+        info!("ready for connections ({} listener(s))", mio_listeners.len());
 
         let mut next_worker = 0usize;
 
         loop {
+            // Block until a connection arrives or the shutdown-check timeout fires.
+            poll.poll(&mut events, Some(Duration::from_millis(100)))?;
+
             if self.shutdown.load(Ordering::Relaxed) {
                 break;
             }
 
-            for (listener, is_tls) in &all_listeners {
-                match listener.accept() {
-                    Ok((stream, addr)) => {
-                        let _ = stream.set_nodelay(true);
-                        // Accepted sockets inherit the listener's non-blocking flag on Linux;
-                        // worker threads use blocking I/O so we must reset it here.
-                        if let Err(e) = stream.set_nonblocking(false) {
-                            error!("set_nonblocking(false) failed for {addr}: {e}");
-                            continue;
-                        }
-                        debug!("accepted {} connection from {}", if *is_tls {"TLS"} else {"TCP"}, addr);
+            for event in events.iter() {
+                let (listener, is_tls) = &mio_listeners[event.token().0];
 
-                        // Round-robin dispatch.
-                        let sender = &self.senders[next_worker % self.senders.len()];
-                        next_worker += 1;
+                // Drain all pending connections on this listener before sleeping again.
+                loop {
+                    match listener.accept() {
+                        Ok((mio_stream, addr)) => {
+                            let stream: TcpStream = std::net::TcpStream::from(mio_stream);
+                            let _ = stream.set_nodelay(true);
+                            // Accepted sockets are non-blocking (inherited from mio);
+                            // worker threads use blocking I/O so we must reset it here.
+                            if let Err(e) = stream.set_nonblocking(false) {
+                                error!("set_nonblocking(false) failed for {addr}: {e}");
+                                continue;
+                            }
+                            debug!("accepted {} connection from {}",
+                                   if *is_tls { "TLS" } else { "TCP" }, addr);
 
-                        let job = Job::Connection { stream, addr, is_tls: *is_tls };
-                        // try_send is non-blocking; if worker is busy we drop the
-                        // connection rather than blocking the accept loop indefinitely.
-                        if sender.try_send(job).is_err() {
-                            debug!("all workers busy — dropping connection from {}", addr);
+                            // Round-robin dispatch.
+                            let sender = &self.senders[next_worker % self.senders.len()];
+                            next_worker += 1;
+
+                            let job = Job::Connection { stream, addr, is_tls: *is_tls };
+                            if sender.try_send(job).is_err() {
+                                debug!("all workers busy — dropping connection from {}", addr);
+                            }
                         }
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(e) => { error!("accept error: {e}"); break; }
                     }
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(e) => { error!("accept error: {e}"); }
                 }
             }
-
-            thread::sleep(Duration::from_millis(1));
         }
 
         // Signal all workers to stop.
