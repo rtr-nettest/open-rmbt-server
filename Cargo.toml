@@ -15,6 +15,10 @@ path = "src/main.rs"
 # Async runtime — used only for Ctrl+C / SIGTERM signal handling.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 
+# Event-driven I/O — used for the accept loop so it sleeps until a connection
+# arrives instead of busy-polling with a sleep interval.
+mio = { version = "1", features = ["net", "os-poll"] }
+
 # Pure-Rust TLS (no OpenSSL dependency).
 rustls        = "0.23"
 rustls-pemfile = "2"
@@ -43,6 +47,3 @@ fastrand    = "2"
 # Ergonomic error propagation.
 anyhow = "1"
 
-[target.'cfg(unix)'.dependencies]
-# Low-level IPv6 socket options (IPV6_V6ONLY) and SIGHUP.
-libc = "0.2"
