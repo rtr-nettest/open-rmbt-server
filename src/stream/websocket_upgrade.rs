@@ -2,6 +2,7 @@ use std::io::{self, BufReader, Read, Write};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use sha1::{Sha1, Digest};
 use tungstenite::WebSocket;
+use log::debug;
 
 use super::{Stream, Transport};
 
@@ -35,7 +36,7 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
     let req = String::from_utf8_lossy(&buf);
 
     if !req.starts_with("GET ") {
-        // Non-GET method: send 405 and close cleanly.
+        debug!("unexpected HTTP method; request:\n{}", req.trim_end());
         let _ = transport.write_all(
             b"HTTP/1.1 405 Method Not Allowed\r\n\
               Connection: close\r\n\
@@ -55,6 +56,7 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
         transport.write_all(RMBT_UPGRADE_RESPONSE)?;
         Ok(Stream::Raw(BufReader::new(transport)))
     } else {
+        debug!("no recognized Upgrade header; request:\n{}", req.trim_end());
         // Browser or health-check request with no Upgrade header.
         // Send 426 so the client gets a clean HTTP response instead of a
         // dangling TLS connection, then close.
