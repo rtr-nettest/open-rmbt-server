@@ -35,6 +35,14 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
     let req = String::from_utf8_lossy(&buf);
 
     if !req.starts_with("GET ") {
+        // Non-GET method: send 405 and close cleanly.
+        let _ = transport.write_all(
+            b"HTTP/1.1 405 Method Not Allowed\r\n\
+              Connection: close\r\n\
+              Content-Length: 0\r\n\
+              \r\n",
+        );
+        let _ = transport.flush();
         return Err(io::Error::new(io::ErrorKind::InvalidData, "expected HTTP GET"));
     }
 
@@ -47,6 +55,19 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
         transport.write_all(RMBT_UPGRADE_RESPONSE)?;
         Ok(Stream::Raw(BufReader::new(transport)))
     } else {
+        // Browser or health-check request with no Upgrade header.
+        // Send 426 so the client gets a clean HTTP response instead of a
+        // dangling TLS connection, then close.
+        let _ = transport.write_all(
+            b"HTTP/1.1 426 Upgrade Required\r\n\
+              Connection: close\r\n\
+              Upgrade: RMBT, websocket\r\n\
+              Content-Type: text/plain\r\n\
+              Content-Length: 40\r\n\
+              \r\n\
+              RMBT measurement server. Use Upgrade: RMBT",
+        );
+        let _ = transport.flush();
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "no recognized Upgrade header (need 'websocket' or 'rmbt')",
