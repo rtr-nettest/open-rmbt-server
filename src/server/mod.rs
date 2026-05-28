@@ -93,10 +93,10 @@ impl Server {
         let shutdown    = Arc::new(AtomicBool::new(false));
 
         for id in 0..num_workers {
-            // Bounded channel: if all workers are busy, the accept loop blocks —
-            // this naturally applies back-pressure, matching the C reference's
-            // `ACCEPT_QUEUE_MAX_SIZE` throttle.
-            let (tx, rx) = mpsc::sync_channel::<Job>(1);
+            // Bounded channel: capacity of 8 lets a worker queue several
+            // connections before back-pressure kicks in, preventing drops when
+            // round-robin lands on a temporarily-busy worker.
+            let (tx, rx) = mpsc::sync_channel::<Job>(8);
             senders.push(tx);
 
             let ctx2      = ctx.clone();
@@ -171,7 +171,7 @@ impl Server {
                 }
             }
 
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(1));
         }
 
         // Signal all workers to stop.

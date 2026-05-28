@@ -1,7 +1,7 @@
 // Protocol constants matching the RMBT specification and the C reference (config.h).
 
 /// Version string sent to clients in the greeting line.
-pub const GREETING: &str = "RMBTv2.1.1\n";
+pub const GREETING: &str = "RMBTv1.3.5\n";
 
 /// Default chunk size for download/upload tests (4 KiB).
 pub const CHUNK_SIZE: usize = 4096;
@@ -53,10 +53,3 @@ lazy_static! {
     };
 }
 
-/// Copy `size` bytes from the shared random buffer into a new `Vec<u8>` and
-/// set the termination byte (last byte) to `0xFF` if `terminal`, else `0x00`.
-pub fn make_chunk(size: usize, terminal: bool) -> Vec<u8> {
-    let mut buf = RANDOM_CHUNK[..size].to_vec();
-    buf[size - 1] = if terminal { 0xFF } else { 0x00 };
-    buf
-}

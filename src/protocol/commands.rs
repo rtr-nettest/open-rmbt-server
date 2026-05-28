@@ -3,7 +3,7 @@ use std::time::Instant;
 use log::{debug, info, error};
 
 use crate::config::constants::{
-    CHUNK_SIZE, MIN_CHUNK_SIZE, MAX_CHUNK_SIZE, MAX_CHUNKS, MAX_SECONDS, make_chunk,
+    CHUNK_SIZE, MIN_CHUNK_SIZE, MAX_CHUNK_SIZE, MAX_CHUNKS, MAX_SECONDS, RANDOM_CHUNK,
 };
 use crate::stream::Stream;
 
@@ -84,12 +84,15 @@ fn handle_gettime(
     let max_ns = seconds as u128 * 1_000_000_000;
     let start  = Instant::now();
 
-    // Send chunks until the elapsed time exceeds the requested duration.
+    // Pre-allocate once from the shared random buffer; mutate the terminal
+    // byte in-place on each iteration instead of re-allocating a new Vec.
+    let mut buf = RANDOM_CHUNK[..*chunk_size].to_vec();
+
     loop {
         let elapsed_ns = start.elapsed().as_nanos();
         let terminal   = elapsed_ns >= max_ns;
-        let chunk      = make_chunk(*chunk_size, terminal);
-        stream.write_all(&chunk)?;
+        *buf.last_mut().unwrap() = if terminal { 0xFF } else { 0x00 };
+        stream.write_all(&buf)?;
         if terminal { break; }
     }
 
@@ -135,11 +138,12 @@ fn handle_getchunks(
     };
 
     let start = Instant::now();
+    let mut buf = RANDOM_CHUNK[..*chunk_size].to_vec();
 
     for i in 1..=count {
         let terminal = i == count;
-        let chunk    = make_chunk(*chunk_size, terminal);
-        stream.write_all(&chunk)?;
+        *buf.last_mut().unwrap() = if terminal { 0xFF } else { 0x00 };
+        stream.write_all(&buf)?;
     }
 
     let ack = stream.read_line()?;
