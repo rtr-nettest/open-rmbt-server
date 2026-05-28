@@ -58,15 +58,20 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
         // Browser or health-check request with no Upgrade header.
         // Send 426 so the client gets a clean HTTP response instead of a
         // dangling TLS connection, then close.
-        let _ = transport.write_all(
-            b"HTTP/1.1 426 Upgrade Required\r\n\
-              Connection: close\r\n\
-              Upgrade: RMBT, websocket\r\n\
-              Content-Type: text/plain\r\n\
-              Content-Length: 40\r\n\
-              \r\n\
-              RMBT measurement server. Use Upgrade: RMBT",
+        let version = crate::config::constants::GREETING.trim(); // "RMBTv1.3.5"
+        let body    = format!("RMBT measurement server - {version}");
+        let resp    = format!(
+            "HTTP/1.1 426 Upgrade Required\r\n\
+             Connection: close\r\n\
+             Upgrade: RMBT, websocket\r\n\
+             Content-Type: text/plain\r\n\
+             Content-Length: {}\r\n\
+             \r\n\
+             {}",
+            body.len(),
+            body,
         );
+        let _ = transport.write_all(resp.as_bytes());
         let _ = transport.flush();
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
