@@ -1,7 +1,7 @@
 // Protocol constants matching the RMBT specification and the C reference (config.h).
 
 /// Version string sent to clients in the greeting line.
-pub const GREETING: &str = "RMBTv1.3.5\n";
+pub const GREETING: &str = "RMBTv2.1.1\n";
 
 /// Default chunk size for download/upload tests (4 KiB).
 pub const CHUNK_SIZE: usize = 4096;
