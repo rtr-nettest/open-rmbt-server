@@ -33,7 +33,11 @@ pub fn run_greeting(
     stream.write_line("ACCEPT TOKEN QUIT\n")?;
 
     // ── Read TOKEN line ───────────────────────────────────────────────────────
-    let line = stream.read_line()?;
+    // Some clients send a blank line between the HTTP upgrade and TOKEN; skip it.
+    let line = loop {
+        let l = stream.read_line()?;
+        if !l.trim().is_empty() { break l; }
+    };
 
     // Parse "TOKEN <value>" — disconnect on any syntax error.
     let token_value = if let Some(rest) = line.strip_prefix("TOKEN ") {
