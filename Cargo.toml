@@ -1,0 +1,48 @@
+[package]
+name = "rmbtd"
+version = "2.1.0"
+edition = "2021"
+
+[lib]
+name = "rmbtd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rmbtd"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime — used only for Ctrl+C / SIGTERM signal handling.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+
+# Pure-Rust TLS (no OpenSSL dependency).
+rustls        = "0.23"
+rustls-pemfile = "2"
+
+# WebSocket framing — server-side only.
+tungstenite = { version = "0.29" }
+
+# HMAC-SHA1 for incoming token validation (RMBT spec §TOKEN).
+sha1 = "0.11"
+hmac = "0.13"
+
+# Base64 for HMAC token comparison.
+base64 = "0.22"
+
+# Logging framework (structured, level-filtered).
+log        = "0.4"
+env_logger = "0.11"
+
+# Timestamps in log output.
+chrono = "0.4"
+
+# Pre-allocated random chunk buffers (download test data).
+lazy_static = "1"
+fastrand    = "2"
+
+# Ergonomic error propagation.
+anyhow = "1"
+
+[target.'cfg(unix)'.dependencies]
+# Low-level IPv6 socket options (IPV6_V6ONLY) and SIGHUP.
+libc = "0.2"
