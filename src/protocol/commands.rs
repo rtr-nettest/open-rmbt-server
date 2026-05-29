@@ -188,31 +188,14 @@ fn handle_put(
     let mut total_bytes    = 0u64;
     let mut buf            = vec![0u8; *chunk_size];
     let mut last_report_ns = i128::MIN; // -1 equivalent (never reported yet)
-    let mut last_byte      = 0u8;
 
-    // The C code tracks last_byte as the last byte at position
-    // `size_of_buffer - 1 - (total_read % size_of_buffer)` within each read.
-    // We replicate: after each read we check the chunk-aligned position.
     loop {
-        let n = stream.read(&mut buf)?;
-        if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "connection closed during PUT"));
-        }
-        total_bytes += n as u64;
-
-        // The C reference computes the offset of the last byte of the current
-        // chunk-aligned window.  Since we always read exactly chunk_size bytes
-        // at a time the terminal byte is simply buf[n-1] when the chunk is full.
-        if n == *chunk_size {
-            last_byte = buf[n - 1];
-        } else if n > 0 {
-            last_byte = buf[n - 1];
-        }
+        stream.read_exact(&mut buf)?;
+        total_bytes += *chunk_size as u64;
+        let last_byte = buf[*chunk_size - 1];
 
         if send_intermediate {
             let elapsed_ns = start.elapsed().as_nanos() as i128;
-            // Send intermediate result if ≥ 1 ms has passed since the last one
-            // (or this is the very first).
             if last_report_ns < 0 || (elapsed_ns - last_report_ns) >= 1_000_000 {
                 last_report_ns = elapsed_ns;
                 let line = format!("TIME {elapsed_ns} BYTES {total_bytes}\n");
