@@ -69,7 +69,10 @@ impl Server {
         for addr in &tcp_addrs {
             match bind_listener(*addr) {
                 Ok(l)  => { info!("TCP listening on {addr}"); tcp_listeners.push(l); }
-                Err(e) => { error!("TCP bind on {addr} failed: {e}"); }
+                Err(e) => {
+                    error!("TCP bind on {addr} failed: {e}");
+                    anyhow::bail!("TCP bind on {addr} failed: {e}");
+                }
             }
         }
 
@@ -78,7 +81,10 @@ impl Server {
             for addr in &tls_addrs {
                 match bind_listener(*addr) {
                     Ok(l)  => { info!("TLS listening on {addr}"); tls_listeners.push(l); }
-                    Err(e) => { error!("TLS bind on {addr} failed: {e}"); }
+                    Err(e) => {
+                        error!("TLS bind on {addr} failed: {e}");
+                        anyhow::bail!("TLS bind on {addr} failed: {e}");
+                    }
                 }
             }
         }
