@@ -56,7 +56,9 @@ pub fn run_greeting(
 
     // ── Validate HMAC + time window ───────────────────────────────────────────
     if config.check_token {
-        match validate_token(token_value, keys, conn_id) {
+        // The v2 token binds the client source address, so pass it through.
+        let source_ip = stream.peer_addr().map(|sa| sa.ip());
+        match validate_token(token_value, keys, conn_id, source_ip, config.v2_only) {
             TokenResult::Accepted { sleep_secs, label } => {
                 info!("[conn {}] valid token; uuid={} key='{}'", conn_id, uuid, label);
                 // Sleep if the client connected slightly before the allowed start time.
@@ -64,7 +66,12 @@ pub fn run_greeting(
                     thread::sleep(Duration::from_secs(sleep_secs));
                 }
             }
-            TokenResult::InvalidHmac | TokenResult::OutsideWindow { .. } | TokenResult::ParseError => {
+            TokenResult::InvalidHmac
+            | TokenResult::InvalidIp
+            | TokenResult::TooEarly { .. }
+            | TokenResult::TooLate { .. }
+            | TokenResult::ParseError
+            | TokenResult::V2Required => {
                 stream.write_line("ERR\n")?;
                 return Err(io::Error::new(io::ErrorKind::PermissionDenied, "token rejected"));
             }

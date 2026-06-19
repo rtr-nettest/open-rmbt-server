@@ -47,6 +47,7 @@ fn parse_config_content(content: &str) -> anyhow::Result<Config> {
             "server_workers"   => { if let Ok(n) = val.parse::<usize>() { cfg.num_workers = n; } }
             "secret_key_path"  => { cfg.secret_key_path = val.to_string(); }
             "check_token"      => { cfg.check_token = val != "false" && val != "0"; }
+            "v2_only"          => { cfg.v2_only = val == "true" || val == "1"; }
             "max_chunk_size"   => { if let Ok(s) = val.parse::<u32>() { cfg.max_chunk_size = Some(s); } }
             "logger" => {
                 cfg.log_level = match val {
@@ -107,6 +108,7 @@ pub struct CliArgs {
     pub secret_key_path: Option<String>,
     pub num_workers:     Option<usize>,
     pub log_level:       Option<LevelFilter>,
+    pub v2_only:         bool,
 }
 
 /// Parse the command-line arguments and return overrides to apply on top of the
@@ -120,6 +122,7 @@ pub fn parse_cli(args: &[String], cfg: &Config) -> anyhow::Result<Option<CliArgs
         secret_key_path: None,
         num_workers:     None,
         log_level:       None,
+        v2_only:         cfg.v2_only,
     };
 
     let mut i = 0;
@@ -149,6 +152,7 @@ pub fn parse_cli(args: &[String], cfg: &Config) -> anyhow::Result<Option<CliArgs
                 if i < args.len() { out.log_level = Some(args[i].parse()?); }
             }
             "-s" => {} // legacy: "start as server" — no-op, always server mode
+            "--v2-only" => { out.v2_only = true; }
             "--help" | "-h" => { print_help(); return Ok(None); }
             "-v" | "--version" => {
                 println!("rmbtd {}", env!("CARGO_PKG_VERSION"));
@@ -216,6 +220,7 @@ fn print_help() {
          \t-k PATH      TLS private key file (PEM)\n\
          \t-S PATH      Secret key file (default: secret.key)\n\
          \t-t N         Worker thread count  (default: 200)\n\
+         \t--v2-only    Accept only v2 tokens (SHA256, IP+time bound); reject legacy v1 tokens\n\
          \t-log LEVEL   Log level: info | debug | trace\n\
          \t-h, --help   Show this help\n\
          \t-v, --version Print version\n\

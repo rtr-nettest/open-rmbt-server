@@ -26,8 +26,9 @@ rustls-pemfile = "2"
 # WebSocket framing — server-side only.
 tungstenite = { version = "0.29" }
 
-# HMAC-SHA1 for incoming token validation (RMBT spec §TOKEN).
+# HMAC-SHA1 (legacy v1 token) and HMAC-SHA256 (v2 token, open-rmbt-udp-ping schema).
 sha1 = "0.11"
+sha2 = "0.11"
 hmac = "0.13"
 
 # Base64 for HMAC token comparison.

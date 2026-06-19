@@ -17,6 +17,7 @@ OPTIONS:
         -c PATH      TLS certificate file (PEM)
         -k PATH      TLS private key file (PEM)
         -t N         Worker thread count  (default: 200)
+        --v2-only    Accept only v2 tokens (SHA256, IP+time bound); reject legacy v1 tokens
         -log LEVEL   Log level: info | debug | trace
         -h, --help   Show this help
         -v, --version Print version

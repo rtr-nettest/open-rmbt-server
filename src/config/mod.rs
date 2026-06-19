@@ -35,6 +35,9 @@ pub struct Config {
     /// When false, incoming tokens are accepted without HMAC verification.
     /// Useful for testing. Mirrors C's `CHECK_TOKEN` constant.
     pub check_token: bool,
+    /// When true, only v2 tokens (SHA256, open-rmbt-udp-ping schema, bound to source
+    /// IP + time) are accepted; legacy v1 tokens are rejected.
+    pub v2_only: bool,
 
     // ── Logging ───────────────────────────────────────────────────────────────
     pub log_level: LevelFilter,
@@ -54,6 +57,7 @@ impl Default for Config {
             num_workers:     200,
             secret_key_path: "secret.key".to_string(),
             check_token:     true,
+            v2_only:         false,
             log_level:       LevelFilter::Off,
             max_chunk_size:  None,
         }
