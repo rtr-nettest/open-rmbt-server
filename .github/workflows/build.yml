@@ -13,18 +13,11 @@ jobs:
     name: Test / linux-x64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: test-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
-          restore-keys: test-${{ runner.os }}-
+      - uses: Swatinem/rust-cache@v2
 
       - name: Test
         run: cargo test
@@ -60,7 +53,7 @@ jobs:
             use_cross: false
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -68,30 +61,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: actions/cache@v4
+      # Caches cargo registry, git and target/; also caches installed binaries
+      # (e.g. cross) under ~/.cargo/bin. Keyed per target.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rmbtd-${{ matrix.target }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
-          restore-keys: rmbtd-${{ matrix.target }}-
+          key: ${{ matrix.target }}
 
       - name: Install musl-tools (Linux x64)
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get install -y musl-tools
 
-      - name: Cache cross binary
-        if: matrix.use_cross == true
-        id: cache-cross
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cross
-          key: cross-stable-v1
-
       - name: Install cross
-        if: matrix.use_cross == true && steps.cache-cross.outputs.cache-hit != 'true'
-        run: cargo install cross
+        if: matrix.use_cross == true
+        run: cargo install cross --locked
 
       - name: Build (native)
         if: matrix.use_cross == false
