@@ -1,6 +1,6 @@
 # RTR Multithreaded Broadband Test (RMBT): Specification
 
-**Version 1.1.1, 15.10.2024** 
+**Version 1.2.0, 19.06.2026** 
 
 RTR-NetTest Team, E-mail: netztest@rtr.at, Web: https://www.netztest.at/
 
