@@ -2,7 +2,7 @@ use std::io;
 use std::net::{TcpListener, TcpStream, SocketAddr};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use log::{info, error, debug};
 use mio::{Events, Interest, Poll, Token};
 use mio::net::TcpListener as MioListener;
@@ -10,8 +10,9 @@ use mio::net::TcpListener as MioListener;
 use crate::config::{Config, SecretKey};
 use crate::config::parser::read_secret_keys;
 use crate::config::constants::SOCKET_TIMEOUT_SECS;
+use crate::events::{EventSink, ConnStats};
 use crate::stream::{Transport, detect_and_upgrade};
-use crate::protocol::{greeting::run_greeting, commands::run_commands};
+use crate::protocol::{greeting::{run_greeting, Greeting}, commands::run_commands};
 use crate::tls::build_tls_config;
 
 /// Message sent from the accept loop to a worker thread.
@@ -26,6 +27,8 @@ struct WorkerCtx {
     config:  Arc<Config>,
     keys:    Arc<Vec<SecretKey>>,
     tls_cfg: Option<Arc<rustls::ServerConfig>>,
+    /// Optional structured-event logger; `None` when syslog is not configured.
+    sink:    Option<Arc<EventSink>>,
 }
 
 /// The top-level server object.
@@ -40,6 +43,7 @@ impl Server {
         config: Config,
         tcp_addrs: Vec<SocketAddr>,
         tls_addrs: Vec<SocketAddr>,
+        sink: Option<Arc<EventSink>>,
     ) -> anyhow::Result<(Self, Vec<TcpListener>, Vec<TcpListener>)> {
         // ── Load secret keys ──────────────────────────────────────────────────
         let keys = if config.check_token {
@@ -94,6 +98,7 @@ impl Server {
             config:  Arc::new(config),
             keys:    Arc::new(keys),
             tls_cfg,
+            sink,
         };
 
         let num_workers = ctx.config.num_workers;
@@ -254,51 +259,84 @@ fn handle_connection(
     is_tls: bool,
     ctx: &WorkerCtx,
 ) {
-    // Anonymise IP: strip last octet/group (matches C's log anonymisation).
-    let anon_addr = anonymise_addr(&addr);
-    info!("[conn {}] connection from {}", conn_id, anon_addr);
-
-    // Apply socket-level I/O timeout (mirrors C's SO_RCVTIMEO/SO_SNDTIMEO).
-    let timeout = Some(Duration::from_secs(SOCKET_TIMEOUT_SECS));
-    if let Err(e) = tcp.set_read_timeout(timeout).and(tcp.set_write_timeout(timeout)) {
-        error!("[conn {}] failed to set socket timeout: {e}", conn_id);
-        return;
-    }
-
-    // Build transport (plain or TLS).
-    let transport = if is_tls {
-        match ctx.tls_cfg.as_ref() {
-            Some(tls_cfg) => match Transport::tls(tcp, tls_cfg.clone()) {
-                Ok(t)  => t,
-                Err(e) => { error!("[conn {}] TLS handshake failed: {e}", conn_id); return; }
-            },
-            None => { error!("[conn {}] TLS connection on non-TLS worker", conn_id); return; }
-        }
+    // Client address for logs: full IP only when explicitly enabled, otherwise the
+    // anonymised form (last octet/group dropped) — matches C's log anonymisation.
+    let client = if ctx.config.log_full_ip {
+        addr.ip().to_string()
     } else {
-        Transport::plain(tcp)
+        anonymise_addr(&addr)
     };
+    info!("[conn {}] connection from {}", conn_id, client);
 
-    // Perform HTTP upgrade (WebSocket or plain RMBT).
-    let mut stream = match detect_and_upgrade(transport) {
-        Ok(s)  => s,
-        Err(e) => { info!("[conn {}] upgrade failed: {e}", conn_id); return; }
-    };
-    debug!("[conn {}] upgraded to {}", conn_id, stream.kind_name());
+    let sink = ctx.sink.as_deref();
+    if let Some(s) = sink { s.connect(conn_id, &client, is_tls); }
 
-    // Greeting + token validation.
-    let uuid = match run_greeting(&mut stream, conn_id, &ctx.config, &ctx.keys) {
-        Ok(u)  => u,
-        Err(e) => { info!("[conn {}] greeting failed: {e}", conn_id); return; }
-    };
+    let start = Instant::now();
+    let mut stats = ConnStats::new();
+    // Token info, set once the greeting succeeds (used in the close event).
+    let mut greeting: Option<Greeting> = None;
 
-    // Main command loop.
-    if let Err(e) = run_commands(&mut stream, conn_id, &uuid) {
-        if e.kind() != io::ErrorKind::ConnectionAborted && e.kind() != io::ErrorKind::ConnectionReset {
-            debug!("[conn {}] command loop ended: {e}", conn_id);
+    // Run the whole session in a labelled block so there is exactly one close-event
+    // emission, regardless of how/where the session ends. The block evaluates to a
+    // short machine-readable "end" reason.
+    let end_reason: &str = 'session: {
+        // Apply socket-level I/O timeout (mirrors C's SO_RCVTIMEO/SO_SNDTIMEO).
+        let timeout = Some(Duration::from_secs(SOCKET_TIMEOUT_SECS));
+        if let Err(e) = tcp.set_read_timeout(timeout).and(tcp.set_write_timeout(timeout)) {
+            error!("[conn {}] failed to set socket timeout: {e}", conn_id);
+            break 'session "timeout_setup_failed";
         }
+
+        // Build transport (plain or TLS).
+        let transport = if is_tls {
+            match ctx.tls_cfg.as_ref() {
+                Some(tls_cfg) => match Transport::tls(tcp, tls_cfg.clone()) {
+                    Ok(t)  => t,
+                    Err(e) => { error!("[conn {}] TLS handshake failed: {e}", conn_id); break 'session "tls_failed"; }
+                },
+                None => { error!("[conn {}] TLS connection on non-TLS worker", conn_id); break 'session "no_tls_worker"; }
+            }
+        } else {
+            Transport::plain(tcp)
+        };
+
+        // Perform HTTP upgrade (WebSocket or plain RMBT).
+        let mut stream = match detect_and_upgrade(transport) {
+            Ok(s)  => s,
+            Err(e) => { info!("[conn {}] upgrade failed: {e}", conn_id); break 'session "upgrade_failed"; }
+        };
+        debug!("[conn {}] upgraded to {}", conn_id, stream.kind_name());
+
+        // Greeting + token validation. The auth event (validity, uuid, token type,
+        // secret label) is emitted inside run_greeting where the full context exists.
+        let g = match run_greeting(&mut stream, conn_id, &ctx.config, &ctx.keys, sink, &client) {
+            Ok(g)  => g,
+            Err(e) => { info!("[conn {}] greeting failed: {e}", conn_id); break 'session "auth_failed"; }
+        };
+        let uuid = g.uuid.clone();
+        greeting = Some(g);
+
+        // Main command loop.
+        match run_commands(&mut stream, conn_id, &uuid, &mut stats) {
+            Ok(())  => "quit",
+            Err(e) if e.kind() == io::ErrorKind::ConnectionAborted
+                   || e.kind() == io::ErrorKind::ConnectionReset => "disconnect",
+            Err(e) => { debug!("[conn {}] command loop ended: {e}", conn_id); "error" }
+        }
+    };
+
+    if let Some(s) = sink {
+        let (uuid, token, secret) = match &greeting {
+            Some(g) => (g.uuid.as_str(), g.token_type, g.label.as_str()),
+            None    => ("", "", ""),
+        };
+        s.close(conn_id, uuid, token, secret, is_tls, start.elapsed(), &stats, end_reason);
     }
 
-    info!("[conn {}] closing connection; uuid={}", conn_id, uuid);
+    match &greeting {
+        Some(g) => info!("[conn {}] closing connection; uuid={}", conn_id, g.uuid),
+        None    => info!("[conn {}] closing connection ({})", conn_id, end_reason),
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

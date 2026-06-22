@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use log::LevelFilter;
 
 pub mod constants;
@@ -41,6 +42,12 @@ pub struct Config {
 
     // ── Logging ───────────────────────────────────────────────────────────────
     pub log_level: LevelFilter,
+    /// Collector address for UDP syslog event logging (per-connection events for ELK).
+    /// `None` disables remote event logging.
+    pub syslog_target: Option<SocketAddr>,
+    /// Log the full client IP instead of the anonymised form (last octet/group dropped).
+    /// Off by default to avoid storing personal data; affects both local logs and events.
+    pub log_full_ip: bool,
 
     // ── Runtime chunk size limit ──────────────────────────────────────────────
     /// Upper bound on the chunk size a client may negotiate. `None` → 4 MiB.
@@ -59,6 +66,8 @@ impl Default for Config {
             check_token:     true,
             v2_only:         false,
             log_level:       LevelFilter::Off,
+            syslog_target:   None,
+            log_full_ip:     false,
             max_chunk_size:  None,
         }
     }

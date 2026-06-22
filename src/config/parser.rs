@@ -49,6 +49,8 @@ fn parse_config_content(content: &str) -> anyhow::Result<Config> {
             "check_token"      => { cfg.check_token = val != "false" && val != "0"; }
             "v2_only"          => { cfg.v2_only = val == "true" || val == "1"; }
             "max_chunk_size"   => { if let Ok(s) = val.parse::<u32>() { cfg.max_chunk_size = Some(s); } }
+            "syslog"           => { cfg.syslog_target = Some(parse_syslog_target(val)?); }
+            "log_full_ip"      => { cfg.log_full_ip = val == "true" || val == "1"; }
             "logger" => {
                 cfg.log_level = match val {
                     "trace" => LevelFilter::Trace,
@@ -109,6 +111,8 @@ pub struct CliArgs {
     pub num_workers:     Option<usize>,
     pub log_level:       Option<LevelFilter>,
     pub v2_only:         bool,
+    pub syslog_target:   Option<SocketAddr>,
+    pub log_full_ip:     bool,
 }
 
 /// Parse the command-line arguments and return overrides to apply on top of the
@@ -123,6 +127,8 @@ pub fn parse_cli(args: &[String], cfg: &Config) -> anyhow::Result<Option<CliArgs
         num_workers:     None,
         log_level:       None,
         v2_only:         cfg.v2_only,
+        syslog_target:   cfg.syslog_target,
+        log_full_ip:     cfg.log_full_ip,
     };
 
     let mut i = 0;
@@ -153,6 +159,11 @@ pub fn parse_cli(args: &[String], cfg: &Config) -> anyhow::Result<Option<CliArgs
             }
             "-s" => {} // legacy: "start as server" — no-op, always server mode
             "--v2-only" => { out.v2_only = true; }
+            "--syslog" => {
+                i += 1;
+                if i < args.len() { out.syslog_target = Some(parse_syslog_target(&args[i])?); }
+            }
+            "--log-full-ip" => { out.log_full_ip = true; }
             "--help" | "-h" => { print_help(); return Ok(None); }
             "-v" | "--version" => {
                 println!("rmbtd {}", env!("CARGO_PKG_VERSION"));
@@ -206,6 +217,19 @@ pub fn parse_addr(s: &str) -> anyhow::Result<SocketAddr> {
     Err(anyhow::anyhow!("invalid address: '{}'", s))
 }
 
+/// Parse a syslog target of the form `IP` or `IP:port` (port defaults to 514).
+/// IPv6 addresses must be bracketed when a port is given (`[::1]:514`).
+pub fn parse_syslog_target(s: &str) -> anyhow::Result<SocketAddr> {
+    let s = s.trim();
+    if let Ok(addr) = s.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    if let Ok(ip) = s.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, 514));
+    }
+    Err(anyhow::anyhow!("invalid syslog target: '{}' (expected IP or IP:port)", s))
+}
+
 fn print_help() {
     println!(
         "rmbtd — RMBT network measurement server\n\
@@ -222,6 +246,8 @@ fn print_help() {
          \t-t N         Worker thread count  (default: 200)\n\
          \t--v2-only    Accept only v2 tokens (SHA256, IP+time bound); reject legacy v1 tokens\n\
          \t-log LEVEL   Log level: info | debug | trace\n\
+         \t--syslog ADDRESS  Send structured per-connection events as UDP RFC 5424 to ADDRESS (IP or IP:port; port default 514)\n\
+         \t--log-full-ip  Log the full client IP (default: anonymised, last octet/group dropped)\n\
          \t-h, --help   Show this help\n\
          \t-v, --version Print version\n\
          \n\

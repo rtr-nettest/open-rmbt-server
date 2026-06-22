@@ -5,6 +5,7 @@ use log::{debug, info, error};
 use crate::config::constants::{
     CHUNK_SIZE, MIN_CHUNK_SIZE, MAX_CHUNK_SIZE, MAX_CHUNKS, MAX_SECONDS, RANDOM_CHUNK,
 };
+use crate::events::ConnStats;
 use crate::stream::Stream;
 
 const ACCEPT_LINE: &str = "ACCEPT GETCHUNKS GETTIME PUT PUTNORESULT PING QUIT\n";
@@ -13,7 +14,12 @@ const ACCEPT_LINE: &str = "ACCEPT GETCHUNKS GETTIME PUT PUTNORESULT PING QUIT\n"
 ///
 /// Mirrors the infinite `for(;;)` loop in the C reference's `handle_connection()`.
 /// Each iteration sends the ACCEPT line and waits for one command.
-pub fn run_commands(stream: &mut Stream, conn_id: usize, uuid: &str) -> io::Result<()> {
+pub fn run_commands(
+    stream: &mut Stream,
+    conn_id: usize,
+    uuid: &str,
+    stats: &mut ConnStats,
+) -> io::Result<()> {
     // The current chunk size negotiated with this client.
     let mut chunk_size: usize = CHUNK_SIZE;
     let max_chunk_size = MAX_CHUNK_SIZE as usize;
@@ -33,11 +39,11 @@ pub fn run_commands(stream: &mut Stream, conn_id: usize, uuid: &str) -> io::Resu
         let arg2 = parts.next().unwrap_or("").trim();
 
         match cmd {
-            "GETTIME"     => handle_gettime(stream, conn_id, arg1, arg2, &mut chunk_size, max_chunk_size)?,
-            "GETCHUNKS"   => handle_getchunks(stream, conn_id, arg1, arg2, &mut chunk_size, max_chunk_size)?,
-            "PUT"         => handle_put(stream, conn_id, arg1, &mut chunk_size, max_chunk_size, true)?,
-            "PUTNORESULT" => handle_put(stream, conn_id, arg1, &mut chunk_size, max_chunk_size, false)?,
-            "PING"        => handle_ping(stream, conn_id)?,
+            "GETTIME"     => { stats.commands += 1; handle_gettime(stream, conn_id, arg1, arg2, &mut chunk_size, max_chunk_size, stats)?; }
+            "GETCHUNKS"   => { stats.commands += 1; handle_getchunks(stream, conn_id, arg1, arg2, &mut chunk_size, max_chunk_size, stats)?; }
+            "PUT"         => { stats.commands += 1; handle_put(stream, conn_id, arg1, &mut chunk_size, max_chunk_size, true, stats)?; }
+            "PUTNORESULT" => { stats.commands += 1; handle_put(stream, conn_id, arg1, &mut chunk_size, max_chunk_size, false, stats)?; }
+            "PING"        => { stats.commands += 1; handle_ping(stream, conn_id, stats)?; }
             "QUIT"        => {
                 stream.write_line("BYE\n")?;
                 info!("[conn {}] QUIT received; uuid={}", conn_id, uuid);
@@ -65,6 +71,7 @@ fn handle_gettime(
     arg_chunk: &str,
     chunk_size: &mut usize,
     max_chunk_size: usize,
+    stats: &mut ConnStats,
 ) -> io::Result<()> {
     // Optional chunk-size override
     if !arg_chunk.is_empty() {
@@ -87,14 +94,18 @@ fn handle_gettime(
     // Pre-allocate once from the shared random buffer; mutate the terminal
     // byte in-place on each iteration instead of re-allocating a new Vec.
     let mut buf = RANDOM_CHUNK[..*chunk_size].to_vec();
+    let mut bytes_sent = 0u64;
 
     loop {
         let elapsed_ns = start.elapsed().as_nanos();
         let terminal   = elapsed_ns >= max_ns;
         *buf.last_mut().unwrap() = if terminal { 0xFF } else { 0x00 };
         stream.write_all(&buf)?;
+        bytes_sent += *chunk_size as u64;
         if terminal { break; }
     }
+    // Record server-side download throughput (send duration, before the client ACK).
+    stats.add_download(bytes_sent, start.elapsed().as_nanos());
 
     // Wait for client acknowledgement.
     let ack = stream.read_line()?;
@@ -122,6 +133,7 @@ fn handle_getchunks(
     arg_chunk: &str,
     chunk_size: &mut usize,
     max_chunk_size: usize,
+    stats: &mut ConnStats,
 ) -> io::Result<()> {
     if !arg_chunk.is_empty() {
         if let Some(cs) = parse_chunk_size(arg_chunk, max_chunk_size) {
@@ -145,6 +157,7 @@ fn handle_getchunks(
         *buf.last_mut().unwrap() = if terminal { 0xFF } else { 0x00 };
         stream.write_all(&buf)?;
     }
+    stats.add_download(count as u64 * *chunk_size as u64, start.elapsed().as_nanos());
 
     let ack = stream.read_line()?;
     if ack.trim() != "OK" {
@@ -172,6 +185,7 @@ fn handle_put(
     chunk_size: &mut usize,
     max_chunk_size: usize,
     send_intermediate: bool,
+    stats: &mut ConnStats,
 ) -> io::Result<()> {
     if !arg_chunk.is_empty() {
         if let Some(cs) = parse_chunk_size(arg_chunk, max_chunk_size) {
@@ -209,6 +223,7 @@ fn handle_put(
     }
 
     let total_ns = start.elapsed().as_nanos();
+    stats.add_upload(total_bytes, total_ns);
     stream.write_line(&format!("TIME {total_ns}\n"))?;
     Ok(())
 }
@@ -219,7 +234,7 @@ fn handle_put(
 ///
 /// Immediately reply `PONG`, wait for "OK", then send `TIME <ns>`.
 /// The measured time is from PONG-sent to OK-received, matching the C code.
-fn handle_ping(stream: &mut Stream, _conn_id: usize) -> io::Result<()> {
+fn handle_ping(stream: &mut Stream, _conn_id: usize, stats: &mut ConnStats) -> io::Result<()> {
     let start = Instant::now();
 
     stream.write_line("PONG\n")?;
@@ -231,6 +246,7 @@ fn handle_ping(stream: &mut Stream, _conn_id: usize) -> io::Result<()> {
     }
 
     let ns = start.elapsed().as_nanos();
+    stats.add_ping(ns);
     stream.write_line(&format!("TIME {ns}\n"))?;
     Ok(())
 }
