@@ -573,6 +573,7 @@ cl->>cs:Test results
 
 |Version |Date |Comment
 | :-- | :-- | :--
+|1.2.0|19.06.2026|- Updates due to introduction of v2 token
 |1.1.1|15.10.2024|- Editorial update in order to mitigate the "Unsupported markdown: list" error in Mermaid diagram
 |1.1.0|19.08.2024|- Update of the document with minor additions and clarifications<br>- Publication under https://github.com/rtr-nettest/rmbt-server/blob/master/RMBT_specification.md
 |1.0.1|27.05.2024|- Conversion from AsciiDoc into GitHub Flavored Markdown (GFM) with minor editorial changes
