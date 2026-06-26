@@ -319,9 +319,18 @@ fn handle_connection(
         // Main command loop.
         match run_commands(&mut stream, conn_id, &uuid, &mut stats) {
             Ok(())  => "quit",
-            Err(e) if e.kind() == io::ErrorKind::ConnectionAborted
-                   || e.kind() == io::ErrorKind::ConnectionReset => "disconnect",
-            Err(e) => { debug!("[conn {}] command loop ended: {e}", conn_id); "error" }
+            Err(e) => match e.kind() {
+                // Ordinary client-initiated closes are normal, not errors: an abrupt
+                // RST (ConnectionReset/Aborted), a clean EOF (our read_line maps a
+                // 0-byte read to UnexpectedEof), a TLS peer hanging up without
+                // close_notify (also UnexpectedEof), or a write to a gone peer
+                // (BrokenPipe).
+                io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::BrokenPipe => "disconnect",
+                _ => { debug!("[conn {}] command loop ended: {e}", conn_id); "error" }
+            },
         }
     };
 
