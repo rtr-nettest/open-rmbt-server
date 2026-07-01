@@ -44,7 +44,7 @@ Events (each carries a `conn` id for correlation):
   client `uuid` (present for **v2** tokens too), the `token` type (`v1`/`v2`), the matched
   `secret` label (on accept), and a `reason` code (on reject).
 * `close` — the outcome at end of connection: `duration_ms`, server-measured download
-  (`dl_bytes`/`dl_mbps`), upload (`ul_bytes`/`ul_mbps`) and ping (`ping_count`/`ping_min_ms`),
+  (`dl_bytes`/`dl_mbps`), upload (`ul_bytes`/`ul_mbps`) and ping (`ping_count`/`ping_min_ms`/`ping_max_ms`),
   the command count, and `end` (`quit` / `disconnect` / `error` / `auth_failed` /
   `upgrade_failed` / …). The `uuid`, `token` type and `secret` label are repeated for
   correlation.
@@ -54,7 +54,7 @@ behaviour; pass `--log-full-ip` (or `log_full_ip = true` in `rmbtd.conf`) to log
 client IP in both local logs and events. Example `close` datagram:
 
 ```text
-<134>1 2026-06-21T15:58:10.097Z host rmbtd 28936 close - {"event":"close","conn":1,"uuid":"8723358c-2037-4029-a70c-91e5d9d35cf3","token":"v2","secret":"testlabel","tls":false,"end":"quit","duration_ms":18.482,"commands":3,"dl_bytes":16384,"dl_mbps":7.765,"ul_bytes":12288,"ul_mbps":915.307,"ping_count":1,"ping_min_ms":0.102}
+<134>1 2026-06-21T15:58:10.097Z host rmbtd 28936 close - {"event":"close","conn":1,"uuid":"8723358c-2037-4029-a70c-91e5d9d35cf3","token":"v2","secret":"testlabel","tls":false,"end":"quit","duration_ms":18.482,"commands":3,"dl_bytes":16384,"dl_mbps":7.765,"ul_bytes":12288,"ul_mbps":915.307,"ping_count":1,"ping_min_ms":0.102,"ping_max_ms":0.102}
 ```
 
 Get in Touch

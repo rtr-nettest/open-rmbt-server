@@ -45,6 +45,7 @@ pub struct ConnStats {
     pub upload_ns: u128,
     pub ping_count: u32,
     pub ping_min_ns: u128,
+    pub ping_max_ns: u128,
     /// Number of test commands (GETTIME/GETCHUNKS/PUT/PUTNORESULT/PING) processed.
     pub commands: u32,
 }
@@ -58,6 +59,7 @@ impl ConnStats {
             upload_ns: 0,
             ping_count: 0,
             ping_min_ns: u128::MAX,
+            ping_max_ns: 0,
             commands: 0,
         }
     }
@@ -76,6 +78,9 @@ impl ConnStats {
         self.ping_count += 1;
         if ns < self.ping_min_ns {
             self.ping_min_ns = ns;
+        }
+        if ns > self.ping_max_ns {
+            self.ping_max_ns = ns;
         }
     }
 }
@@ -210,7 +215,8 @@ impl EventSink {
         if stats.ping_count > 0 {
             j = j
                 .int("ping_count", stats.ping_count as i64)
-                .float("ping_min_ms", ns_to_ms(stats.ping_min_ns));
+                .float("ping_min_ms", ns_to_ms(stats.ping_min_ns))
+                .float("ping_max_ms", ns_to_ms(stats.ping_max_ns));
         }
         self.emit(SEV_INFO, "close", j.done());
     }
@@ -372,5 +378,6 @@ mod tests {
         assert_eq!(s.download_ns, 2000);
         assert_eq!(s.ping_count, 2);
         assert_eq!(s.ping_min_ns, 300);
+        assert_eq!(s.ping_max_ns, 900);
     }
 }
