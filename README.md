@@ -62,7 +62,6 @@ Get in Touch
 
 * [RTR-Netztest](https://www.netztest.at) on the web
 
-
 License
 -------
 
