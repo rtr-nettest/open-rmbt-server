@@ -123,7 +123,7 @@ impl EventSink {
             "lifecycle",
             Json::new()
                 .str("event", "startup")
-                .str("version", env!("CARGO_PKG_VERSION"))
+                .str("version", env!("RMBTD_VERSION"))
                 .int("workers", workers as i64)
                 .int("tcp_listeners", tcp_listeners as i64)
                 .int("tls_listeners", tls_listeners as i64)

@@ -60,7 +60,7 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
         // Browser or health-check request with no Upgrade header.
         // Send 426 so the client gets a clean HTTP response instead of a
         // dangling TLS connection, then close.
-        let version = crate::config::constants::GREETING.trim(); // "RMBTv1.3.5"
+        let version = crate::config::constants::GREETING.trim(); // e.g. "RMBTv1.7.0"
         let body    = format!("RMBT measurement server - {version}");
         let resp    = format!(
             "HTTP/1.1 426 Upgrade Required\r\n\

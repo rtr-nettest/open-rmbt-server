@@ -1,7 +1,10 @@
 // Protocol constants matching the RMBT specification and the C reference (config.h).
 
 /// Version string sent to clients in the greeting line.
-pub const GREETING: &str = "RMBTv1.6.0\n";
+///
+/// The version is resolved at build time (see `build.rs`): "0.0.0-dev" for
+/// untagged builds, the git tag for release builds.
+pub const GREETING: &str = concat!("RMBTv", env!("RMBTD_VERSION"), "\n");
 
 /// Default chunk size for download/upload tests (4 KiB).
 pub const CHUNK_SIZE: usize = 4096;

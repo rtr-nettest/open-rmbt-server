@@ -1,0 +1,5 @@
+# Forward the build-time version into the cross Docker container so build.rs can
+# embed the release tag (see build.rs / .github/workflows/build.yml). Without
+# this, the env var stays on the host and the arm64 build falls back to dev.
+[build.env]
+passthrough = ["RMBTD_VERSION"]

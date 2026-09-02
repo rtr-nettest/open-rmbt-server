@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
         logger::init(config.log_level)?;
     }
 
-    info!("starting rmbtd v{}", env!("CARGO_PKG_VERSION"));
+    info!("starting rmbtd v{}", env!("RMBTD_VERSION"));
     info!("version string: {}", rmbtd::config::constants::GREETING.trim());
 
     // Set up the optional UDP syslog event sink for structured per-connection logging.

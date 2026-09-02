@@ -166,7 +166,7 @@ pub fn parse_cli(args: &[String], cfg: &Config) -> anyhow::Result<Option<CliArgs
             "--log-full-ip" => { out.log_full_ip = true; }
             "--help" | "-h" => { print_help(); return Ok(None); }
             "-v" | "--version" => {
-                println!("rmbtd {}", env!("CARGO_PKG_VERSION"));
+                println!("rmbtd {}", env!("RMBTD_VERSION"));
                 return Ok(None);
             }
             unknown => {

@@ -75,12 +75,18 @@ jobs:
         if: matrix.use_cross == true
         run: cargo install cross --locked
 
+      # On a tag push, embed the tag as the version (deterministic, independent
+      # of git-describe). Otherwise build.rs falls back to git-describe / dev.
       - name: Build (native)
         if: matrix.use_cross == false
+        env:
+          RMBTD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build (cross — Docker-based)
         if: matrix.use_cross == true
+        env:
+          RMBTD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Package (Unix)
