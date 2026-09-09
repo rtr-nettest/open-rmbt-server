@@ -247,7 +247,7 @@ fn print_help() {
          \t--v2-only    Accept only v2 tokens (SHA256, IP+time bound); reject legacy v1 tokens\n\
          \t-log LEVEL   Log level: info | debug | trace\n\
          \t--syslog ADDRESS  Send structured per-connection events as UDP RFC 5424 to ADDRESS (IP or IP:port; port default 514)\n\
-         \t--log-full-ip  Log the full client IP (default: anonymised, last octet/group dropped)\n\
+         \t--log-full-ip  Log the full client IP (default: anonymised, last octet dropped for IPv4, past /48 for IPv6)\n\
          \t-h, --help   Show this help\n\
          \t-v, --version Print version\n\
          \n\

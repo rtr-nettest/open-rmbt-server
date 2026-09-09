@@ -260,7 +260,7 @@ fn handle_connection(
     ctx: &WorkerCtx,
 ) {
     // Client address for logs: full IP only when explicitly enabled, otherwise the
-    // anonymised form (last octet/group dropped) — matches C's log anonymisation.
+    // anonymised form (last octet for IPv4, everything past /48 for IPv6 dropped).
     let client = if ctx.config.log_full_ip {
         addr.ip().to_string()
     } else {
@@ -357,15 +357,36 @@ fn bind_listener(addr: SocketAddr) -> io::Result<TcpListener> {
     Ok(listener)
 }
 
-/// Remove the last octet (IPv4) or group (IPv6) from an address to avoid
-/// storing personal data in logs — identical to the C reference's behaviour.
+/// Truncate an address to avoid storing personal data in logs: the last
+/// octet for IPv4 (keeping a /24), or everything past the first 48 bits for
+/// IPv6 (keeping a /48, the usual site-allocation boundary) — identical to
+/// the C reference's behaviour.
 fn anonymise_addr(addr: &SocketAddr) -> String {
-    let ip = addr.ip().to_string();
-    if let Some(pos) = ip.rfind('.') {
-        format!("{}.*", &ip[..pos])
-    } else if let Some(pos) = ip.rfind(':') {
-        format!("{}:*", &ip[..pos])
-    } else {
-        ip
+    match addr.ip() {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            format!("{}.{}.{}.*", o[0], o[1], o[2])
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}:*", s[0], s[1], s[2])
+        }
+    }
+}
+
+#[cfg(test)]
+mod anonymise_tests {
+    use super::*;
+
+    #[test]
+    fn ipv4_drops_last_octet() {
+        let addr: SocketAddr = "203.0.113.42:8080".parse().unwrap();
+        assert_eq!(anonymise_addr(&addr), "203.0.113.*");
+    }
+
+    #[test]
+    fn ipv6_keeps_only_first_48_bits() {
+        let addr: SocketAddr = "[2001:db8:85a3:8d3:1319:8a2e:370:7348]:443".parse().unwrap();
+        assert_eq!(anonymise_addr(&addr), "2001:db8:85a3:*");
     }
 }

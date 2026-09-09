@@ -45,7 +45,8 @@ pub struct Config {
     /// Collector address for UDP syslog event logging (per-connection events for ELK).
     /// `None` disables remote event logging.
     pub syslog_target: Option<SocketAddr>,
-    /// Log the full client IP instead of the anonymised form (last octet/group dropped).
+    /// Log the full client IP instead of the anonymised form (last octet for IPv4,
+    /// everything past /48 for IPv6 dropped).
     /// Off by default to avoid storing personal data; affects both local logs and events.
     pub log_full_ip: bool,
 
