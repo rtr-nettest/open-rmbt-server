@@ -6,6 +6,34 @@ the RMBT protocol. Clients can communicate either directly via TCP sockets or ba
 the WebSocket protocol.
 
 
+Requirements
+------------
+
+- Rust 1.70+ (uses the 2021 edition)
+- Cargo (included with Rust)
+
+Install Rust via [rustup](https://rustup.rs/):
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Build
+-----
+
+```sh
+cargo build --release
+```
+
+The binary is written to `target/release/rmbtd`.
+
+For a debug build (faster compile, slower runtime):
+
+```sh
+cargo build
+# binary at target/debug/rmbtd
+```
+
 Usage
 -----
 ```
