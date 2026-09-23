@@ -21,6 +21,9 @@ pub struct Config {
     // ── TLS certificate paths ─────────────────────────────────────────────────
     pub cert_path: Option<String>,
     pub key_path:  Option<String>,
+    /// When true, restrict TLS to version 1.3; reject TLS 1.2.
+    /// Default false (TLS 1.2 and 1.3 both accepted).
+    pub tls13_only: bool,
 
     // ── Worker threads ────────────────────────────────────────────────────────
     /// Number of worker threads in the connection handler pool.
@@ -52,6 +55,7 @@ impl Default for Config {
         Self {
             cert_path:       None,
             key_path:        None,
+            tls13_only:      false,
             num_workers:     200,
             secret_key_path: "secret.key".to_string(),
             check_token:     true,

@@ -59,8 +59,12 @@ impl Server {
         let tls_cfg = if config.cert_path.is_some() && config.key_path.is_some() {
             let cert = config.cert_path.as_deref().unwrap();
             let key  = config.key_path.as_deref().unwrap();
-            match build_tls_config(cert, key) {
-                Ok(c) => { info!("TLS configured (cert={cert}, key={key})"); Some(Arc::new(c)) }
+            match build_tls_config(cert, key, config.tls13_only) {
+                Ok(c) => {
+                    let versions = if config.tls13_only { "TLS1.3 only" } else { "TLS1.2+1.3" };
+                    info!("TLS configured (cert={cert}, key={key}, {versions})");
+                    Some(Arc::new(c))
+                }
                 Err(e) => { error!("TLS config failed: {e} — TLS disabled"); None }
             }
         } else {

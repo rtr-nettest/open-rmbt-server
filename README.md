@@ -44,6 +44,7 @@ OPTIONS:
         -L ADDRESS   TLS listen address  (default: [::]:443 and 0.0.0.0:443)
         -c PATH      TLS certificate file (PEM)
         -k PATH      TLS private key file (PEM)
+        --tls13-only Restrict TLS to version 1.3 (reject TLS 1.2)
         -S PATH      Secret key file (default: secret.key)
         -t N         Worker thread count  (default: 200)
         --no-token-check  Accept all tokens without HMAC verification (testing/debugging only)

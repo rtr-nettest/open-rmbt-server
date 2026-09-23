@@ -8,7 +8,10 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 ///
 /// The certificate file may contain a chain (server cert first, then
 /// intermediates) — rustls accepts the full chain in one PEM file.
-pub fn build_tls_config(cert_path: &str, key_path: &str) -> anyhow::Result<ServerConfig> {
+///
+/// When `tls13_only` is set, the server offers only TLS 1.3; TLS 1.2 handshakes
+/// are refused. Otherwise both TLS 1.2 and 1.3 are accepted.
+pub fn build_tls_config(cert_path: &str, key_path: &str, tls13_only: bool) -> anyhow::Result<ServerConfig> {
     // Load certificate chain.
     let cert_file = File::open(cert_path)
         .map_err(|e| anyhow::anyhow!("cannot open cert file '{}': {}", cert_path, e))?;
@@ -40,7 +43,15 @@ pub fn build_tls_config(cert_path: &str, key_path: &str) -> anyhow::Result<Serve
         }
     };
 
-    let config = ServerConfig::builder()
+    // Restrict the offered protocol versions when requested. Both builders yield
+    // the same `ConfigBuilder` type, so the rest of the chain is shared.
+    let builder = if tls13_only {
+        ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+    } else {
+        ServerConfig::builder()
+    };
+
+    let config = builder
         .with_no_client_auth()
         .with_single_cert(cert_chain, private_key)
         .map_err(|e| anyhow::anyhow!("TLS config error: {e}"))?;
