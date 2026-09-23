@@ -10,6 +10,12 @@ pub const GREETING: &str = concat!("RMBTv", env!("RMBTD_VERSION"), "\n");
 /// no `-L` address is given on the command line.
 pub const DEFAULT_TLS_PORT: u16 = 443;
 
+/// HSTS response header line sent on TLS connections when `--hsts` is enabled.
+/// Modelled on the header served by www.netztest.at (`max-age=31536000`, one
+/// year), but scoped to this host only — `includeSubDomains` (and therefore
+/// `preload`, which requires it) are intentionally omitted.
+pub const HSTS_HEADER: &str = "Strict-Transport-Security: max-age=31536000\r\n";
+
 /// Default chunk size for download/upload tests (4 KiB).
 pub const CHUNK_SIZE: usize = 4096;
 

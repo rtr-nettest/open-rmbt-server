@@ -64,6 +64,7 @@ pub fn parse_cli(args: &[String]) -> anyhow::Result<Option<Cli>> {
             "-c" => { i += 1; if i < args.len() { config.cert_path       = Some(args[i].clone()); } }
             "-k" => { i += 1; if i < args.len() { config.key_path        = Some(args[i].clone()); } }
             "--tls13-only" => { config.tls13_only = true; }
+            "--hsts" => { config.hsts = true; }
             "-S" => { i += 1; if i < args.len() { config.secret_key_path = args[i].clone(); } }
             "-t" => { i += 1; if i < args.len() { config.num_workers = args[i].parse()?; } }
             "-log" => { i += 1; if i < args.len() { config.log_level = args[i].parse()?; } }
@@ -154,6 +155,7 @@ fn print_help() {
          \t-c PATH      TLS certificate file (PEM)\n\
          \t-k PATH      TLS private key file (PEM)\n\
          \t--tls13-only Restrict TLS to version 1.3 (reject TLS 1.2)\n\
+         \t--hsts       Send an HSTS header (Strict-Transport-Security: max-age=31536000) on TLS responses\n\
          \t-S PATH      Secret key file (default: secret.key)\n\
          \t-t N         Worker thread count  (default: 200)\n\
          \t--no-token-check  Accept all tokens without HMAC verification (testing/debugging only)\n\

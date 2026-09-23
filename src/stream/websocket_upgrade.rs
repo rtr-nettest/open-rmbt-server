@@ -5,10 +5,7 @@ use tungstenite::WebSocket;
 use log::debug;
 
 use super::{Stream, Transport};
-
-// HTTP 101 response for plain RMBT-over-HTTP upgrade (no WebSocket framing).
-const RMBT_UPGRADE_RESPONSE: &[u8] =
-    b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: RMBT\r\n\r\n";
+use crate::config::constants::HSTS_HEADER;
 
 // RFC 6455 §1.3 magic suffix appended to Sec-WebSocket-Key before SHA-1.
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -18,7 +15,13 @@ const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 /// Called for every new connection when the server operates in HTTP/WebSocket
 /// mode (always, matching the C reference's `-w` behaviour which is now the
 /// default).
-pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
+///
+/// `add_hsts` appends a `Strict-Transport-Security` header to the HTTP
+/// responses; the caller sets it only for TLS connections when HSTS is enabled.
+pub fn detect_and_upgrade(mut transport: Transport, add_hsts: bool) -> io::Result<Stream> {
+    // HSTS header line to include on responses (empty when disabled).
+    let hsts = if add_hsts { HSTS_HEADER } else { "" };
+
     // Read until the blank line that ends the HTTP request headers.
     let mut buf = Vec::with_capacity(1024);
     let mut tmp = [0u8; 1];
@@ -37,12 +40,14 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
 
     if !req.starts_with("GET ") {
         debug!("unexpected HTTP method; request:\n{}", req.trim_end());
-        let _ = transport.write_all(
-            b"HTTP/1.1 405 Method Not Allowed\r\n\
-              Connection: close\r\n\
-              Content-Length: 0\r\n\
-              \r\n",
+        let resp = format!(
+            "HTTP/1.1 405 Method Not Allowed\r\n\
+             Connection: close\r\n\
+             {hsts}\
+             Content-Length: 0\r\n\
+             \r\n"
         );
+        let _ = transport.write_all(resp.as_bytes());
         let _ = transport.flush();
         return Err(io::Error::new(io::ErrorKind::InvalidData, "expected HTTP GET"));
     }
@@ -50,10 +55,16 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
     let req_lower = req.to_ascii_lowercase();
 
     if req_lower.contains("upgrade: websocket") {
-        websocket_handshake(transport, &req)
+        websocket_handshake(transport, &req, hsts)
     } else if req_lower.contains("upgrade: rmbt") {
         // Plain RMBT: acknowledge the upgrade and continue without WS framing.
-        transport.write_all(RMBT_UPGRADE_RESPONSE)?;
+        let resp = format!(
+            "HTTP/1.1 101 Switching Protocols\r\n\
+             Connection: Upgrade\r\n\
+             Upgrade: RMBT\r\n\
+             {hsts}\r\n"
+        );
+        transport.write_all(resp.as_bytes())?;
         Ok(Stream::Raw(BufReader::new(transport)))
     } else {
         debug!("no recognized Upgrade header; request:\n{}", req.trim_end());
@@ -66,6 +77,7 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
             "HTTP/1.1 426 Upgrade Required\r\n\
              Connection: close\r\n\
              Upgrade: RMBT, websocket\r\n\
+             {hsts}\
              Content-Type: text/plain\r\n\
              Content-Length: {}\r\n\
              \r\n\
@@ -88,7 +100,7 @@ pub fn detect_and_upgrade(mut transport: Transport) -> io::Result<Stream> {
 /// Sec-WebSocket-Accept via SHA-1, send the HTTP 101 response) rather than
 /// using tungstenite's `accept()` so that we control when we read vs. write
 /// and can reuse the transport we already hold.
-fn websocket_handshake(mut transport: Transport, request: &str) -> io::Result<Stream> {
+fn websocket_handshake(mut transport: Transport, request: &str, hsts: &str) -> io::Result<Stream> {
     // Extract the Sec-WebSocket-Key header value (case-insensitive search).
     let key = request
         .lines()
@@ -114,7 +126,7 @@ fn websocket_handshake(mut transport: Transport, request: &str) -> io::Result<St
          Connection: Upgrade\r\n\
          Upgrade: websocket\r\n\
          Sec-WebSocket-Accept: {accept}\r\n\
-         \r\n"
+         {hsts}\r\n"
     );
     transport.write_all(response.as_bytes())?;
     transport.flush()?;

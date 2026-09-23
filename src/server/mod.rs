@@ -312,8 +312,10 @@ fn handle_connection(
             Transport::plain(tcp)
         };
 
-        // Perform HTTP upgrade (WebSocket or plain RMBT).
-        let mut stream = match detect_and_upgrade(transport) {
+        // Perform HTTP upgrade (WebSocket or plain RMBT). HSTS is only meaningful
+        // over TLS, so it is offered only on TLS connections and only when enabled.
+        let add_hsts = is_tls && ctx.config.hsts;
+        let mut stream = match detect_and_upgrade(transport, add_hsts) {
             Ok(s)  => s,
             // A client that opens a socket (commonly a browser preconnect or a
             // spare connection), completes TLS, then closes before sending the

@@ -24,6 +24,9 @@ pub struct Config {
     /// When true, restrict TLS to version 1.3; reject TLS 1.2.
     /// Default false (TLS 1.2 and 1.3 both accepted).
     pub tls13_only: bool,
+    /// When true, send an HSTS (Strict-Transport-Security) header on HTTP
+    /// responses over TLS connections. Default false.
+    pub hsts: bool,
 
     // ── Worker threads ────────────────────────────────────────────────────────
     /// Number of worker threads in the connection handler pool.
@@ -56,6 +59,7 @@ impl Default for Config {
             cert_path:       None,
             key_path:        None,
             tls13_only:      false,
+            hsts:            false,
             num_workers:     200,
             secret_key_path: "secret.key".to_string(),
             check_token:     true,
