@@ -6,6 +6,10 @@
 /// untagged builds, the git tag for release builds.
 pub const GREETING: &str = concat!("RMBTv", env!("RMBTD_VERSION"), "\n");
 
+/// Default TLS listen port, used for the `[::]` and `0.0.0.0` listeners when
+/// no `-L` address is given on the command line.
+pub const DEFAULT_TLS_PORT: u16 = 443;
+
 /// Default chunk size for download/upload tests (4 KiB).
 pub const CHUNK_SIZE: usize = 4096;
 

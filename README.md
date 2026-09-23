@@ -46,6 +46,7 @@ OPTIONS:
         -k PATH      TLS private key file (PEM)
         -S PATH      Secret key file (default: secret.key)
         -t N         Worker thread count  (default: 200)
+        --no-token-check  Accept all tokens without HMAC verification (testing/debugging only)
         --v2-only    Accept only v2 tokens (SHA256, IP+time bound); reject legacy v1 tokens
         -log LEVEL   Log level: info | debug | trace
         --syslog ADDRESS  Send structured per-connection events as UDP RFC 5424 to ADDRESS (IP or IP:port; port default 514)
@@ -59,7 +60,7 @@ ADDRESS examples: "443", "0.0.0.0:443", "[::]:443"
 Remote event logging (ELK)
 --------------------------
 
-`--syslog <IP[:port]>` (or `syslog = <IP[:port]>` in `rmbtd.conf`; off by default, port
+`--syslog <IP[:port]>` (off by default, port
 defaults to 514) ships one structured event per client activity to a collector as UDP
 **RFC 5424** datagrams with a JSON message body. This ingests directly into ELK (Logstash
 syslog input + `json` filter). Sending is fire-and-forget and never blocks connection
@@ -78,7 +79,7 @@ Events (each carries a `conn` id for correlation):
   correlation.
 
 By default the source IP is anonymised (last octet/group dropped), matching the local-log
-behaviour; pass `--log-full-ip` (or `log_full_ip = true` in `rmbtd.conf`) to log the full
+behaviour; pass `--log-full-ip` to log the full
 client IP in both local logs and events. Example `close` datagram:
 
 ```text

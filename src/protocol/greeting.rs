@@ -3,7 +3,7 @@ use std::thread;
 use std::time::Duration;
 use log::{info, error};
 
-use crate::config::{Config, SecretKey, constants::{GREETING, CHUNK_SIZE, MIN_CHUNK_SIZE}};
+use crate::config::{Config, SecretKey, constants::{GREETING, CHUNK_SIZE, MIN_CHUNK_SIZE, MAX_CHUNK_SIZE}};
 use crate::events::EventSink;
 use crate::stream::Stream;
 use crate::protocol::token::{validate_token, TokenResult};
@@ -107,8 +107,7 @@ pub fn run_greeting(
     // ── Acknowledge and advertise chunk size range ────────────────────────────
     stream.write_line("OK\n")?;
 
-    let max_cs = config.max_chunk_size.unwrap_or(crate::config::constants::MAX_CHUNK_SIZE);
-    let chunksize_line = format!("CHUNKSIZE {CHUNK_SIZE} {MIN_CHUNK_SIZE} {max_cs}\n");
+    let chunksize_line = format!("CHUNKSIZE {CHUNK_SIZE} {MIN_CHUNK_SIZE} {MAX_CHUNK_SIZE}\n");
     stream.write_line(&chunksize_line)?;
 
     Ok(Greeting { uuid, token_type, label })

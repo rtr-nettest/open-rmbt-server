@@ -15,13 +15,9 @@ pub struct SecretKey {
     pub label: String,
 }
 
-/// Configuration read from the config file and potentially overridden by CLI.
+/// Runtime configuration, built entirely from command-line arguments.
 #[derive(Debug, Clone)]
 pub struct Config {
-    // ── Listen addresses ──────────────────────────────────────────────────────
-    pub tcp_port: u16,
-    pub tls_port: u16,
-
     // ── TLS certificate paths ─────────────────────────────────────────────────
     pub cert_path: Option<String>,
     pub key_path:  Option<String>,
@@ -49,17 +45,11 @@ pub struct Config {
     /// everything past /48 for IPv6 dropped).
     /// Off by default to avoid storing personal data; affects both local logs and events.
     pub log_full_ip: bool,
-
-    // ── Runtime chunk size limit ──────────────────────────────────────────────
-    /// Upper bound on the chunk size a client may negotiate. `None` → 4 MiB.
-    pub max_chunk_size: Option<u32>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            tcp_port:        5005,
-            tls_port:        443,
             cert_path:       None,
             key_path:        None,
             num_workers:     200,
@@ -69,7 +59,6 @@ impl Default for Config {
             log_level:       LevelFilter::Off,
             syslog_target:   None,
             log_full_ip:     false,
-            max_chunk_size:  None,
         }
     }
 }

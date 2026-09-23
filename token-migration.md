@@ -47,11 +47,7 @@ By default the server accepts v1 **and** v2 tokens (no action needed; fully back
 Restrict to v2 only (v1 tokens are rejected):
 
 ```bash
-# CLI flag
 rmbtd -L 0.0.0.0:443 --v2-only
-
-# or in rmbtd.conf
-v2_only = true
 ```
 
 `--v2-only` on the CLI forces v2-only on top of the config file (CLI can only tighten). The token
@@ -61,7 +57,7 @@ HMAC check itself is still governed by `check_token` (set it `false` only for te
 
 `src/protocol/token.rs`:
 
-```rust
+```text
 pub fn validate_token(
     raw_token: &str,
     keys: &[SecretKey],
@@ -103,7 +99,7 @@ The greeting handler (`src/protocol/greeting.rs`) supplies `source_ip` from
 
 ## Debugging
 
-Run with `-log debug` (or `logger = debug` in `rmbtd.conf`) to trace v2 verification. Each step is
+Run with `-log debug` to trace v2 verification. Each step is
 logged with the relevant bytes in hex so a mismatch is easy to localise:
 
 ```

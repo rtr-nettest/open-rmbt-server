@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use log::{info, error};
 
-use rmbtd::config::parser::{read_config_file, parse_cli};
+use rmbtd::config::parser::parse_cli;
 use rmbtd::events::EventSink;
 use rmbtd::logger;
 use rmbtd::server::Server;
@@ -25,26 +25,14 @@ fn main() {
 async fn run() -> Result<(), ()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // Load the config file first so CLI flags can override it.
+    // All configuration comes from the command line.
+    // Returns None if --help or --version was printed.
     // (Logging is not yet initialised here, so report on stderr.)
-    let mut config = read_config_file().map_err(|e| eprintln!("error: {e}"))?;
-
-    // Parse CLI arguments.  Returns None if --help or --version was printed.
-    let cli = match parse_cli(&args, &config).map_err(|e| eprintln!("error: {e}"))? {
+    let cli = match parse_cli(&args).map_err(|e| eprintln!("error: {e}"))? {
         Some(c) => c,
         None    => return Ok(()),
     };
-
-    // Apply CLI overrides on top of the file config.
-    if let Some(n) = cli.num_workers     { config.num_workers     = n; }
-    if let Some(l) = cli.log_level       { config.log_level       = l; }
-    if let Some(c) = cli.cert_path       { config.cert_path       = Some(c); }
-    if let Some(k) = cli.key_path        { config.key_path        = Some(k); }
-    if let Some(s) = cli.secret_key_path { config.secret_key_path = s; }
-    // --v2-only is additive on top of the config file (CLI can only tighten, not relax).
-    config.v2_only = cli.v2_only;
-    if let Some(t) = cli.syslog_target { config.syslog_target = Some(t); }
-    config.log_full_ip = cli.log_full_ip;
+    let config = cli.config;
 
     // Initialise logging before anything else so all startup messages appear.
     // (Still on stderr for reporting, since the logger is what just failed.)
