@@ -34,7 +34,13 @@ pub const MAX_SECONDS: u32 = 30;
 /// Maximum length of a single protocol text line (bytes).
 pub const MAX_LINE_LENGTH: usize = 1024;
 
-/// Per-socket I/O timeout (seconds) — mirrors C's SO_RCVTIMEO/SO_SNDTIMEO.
+/// Per-socket I/O inactivity timeout (seconds) — applied as SO_RCVTIMEO/SO_SNDTIMEO.
+///
+/// This is a per-read/write inactivity bound, not a total-session deadline. It could
+/// be lowered (e.g. to 10s) to tighten the slow-client / slowloris worker-hold window;
+/// the trade-off is that very slow but legitimate links get less headroom (a single
+/// blocking download write or upload chunk must then complete within the shorter
+/// window), so it is left at the reference value of 30s.
 pub const SOCKET_TIMEOUT_SECS: u64 = 30;
 
 /// Token time window: how many seconds early a client may connect.

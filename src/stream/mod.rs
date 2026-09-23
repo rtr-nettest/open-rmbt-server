@@ -34,18 +34,25 @@ impl Stream {
         use crate::config::constants::MAX_LINE_LENGTH;
         match self {
             Stream::Raw(br) => {
-                let mut line = String::new();
-                let n = br.read_line(&mut line)?;
+                // Bound the read to MAX_LINE_LENGTH+1 bytes so a client cannot
+                // exhaust memory by sending a "line" that never contains a
+                // newline: `read_until` would otherwise buffer without limit.
+                let mut buf = Vec::new();
+                let n = br.by_ref()
+                    .take(MAX_LINE_LENGTH as u64 + 1)
+                    .read_until(b'\n', &mut buf)?;
                 if n == 0 {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "connection closed"));
                 }
-                if line.len() > MAX_LINE_LENGTH {
+                // Over the cap (with or without a terminating newline) → refuse.
+                if buf.len() > MAX_LINE_LENGTH {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "line too long"));
                 }
                 // strip trailing \n and \r\n
-                if line.ends_with('\n') { line.pop(); }
-                if line.ends_with('\r') { line.pop(); }
-                Ok(line)
+                if buf.last() == Some(&b'\n') { buf.pop(); }
+                if buf.last() == Some(&b'\r') { buf.pop(); }
+                String::from_utf8(buf)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 in line"))
             }
             Stream::WebSocket(ws) => {
                 // WebSocket frames arrive complete; keep reading until we get a
