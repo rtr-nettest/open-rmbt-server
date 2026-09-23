@@ -1,7 +1,7 @@
 //! Structured per-connection event logging to a remote collector over UDP syslog
 //! (RFC 5424), for ingestion into ELK.
 //!
-//! When `syslog` is configured (config file `syslog = IP[:port]` or `--syslog`), the
+//! When a syslog collector is configured (`--syslog IP[:port]`), the
 //! server emits one UDP datagram per connection event with RFC 5424 framing and a JSON
 //! message body, e.g.:
 //!

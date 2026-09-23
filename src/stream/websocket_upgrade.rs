@@ -135,5 +135,5 @@ fn websocket_handshake(mut transport: Transport, request: &str, hsts: &str) -> i
     // Role::Server means tungstenite expects masked frames from clients and sends
     // unmasked frames to clients (RFC 6455 §5.1).
     let ws = WebSocket::from_raw_socket(transport, tungstenite::protocol::Role::Server, None);
-    Ok(Stream::WebSocket(ws))
+    Ok(Stream::WebSocket(Box::new(ws)))
 }

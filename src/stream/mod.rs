@@ -22,7 +22,9 @@ pub enum Stream {
     /// Plain TCP or TLS — RMBT lines sent as raw bytes.
     Raw(BufReader<Transport>),
     /// WebSocket over TCP or TLS — RMBT lines sent as text/binary frames.
-    WebSocket(WebSocket<Transport>),
+    /// Boxed: `tungstenite::WebSocket` is far larger than `BufReader`, so keeping
+    /// it inline would size every `Stream` (including raw ones) to the WS variant.
+    WebSocket(Box<WebSocket<Transport>>),
 }
 
 impl Stream {
@@ -60,7 +62,7 @@ impl Stream {
                         Ok(Message::Close(_))  => return Err(io::Error::new(io::ErrorKind::ConnectionReset, "ws close")),
                         Ok(_)                  => continue, // ping/pong/continuation
                         Err(tungstenite::Error::Io(e)) => return Err(e),
-                        Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
+                        Err(e) => return Err(io::Error::other(e.to_string())),
                     }
                 }
             }
@@ -80,8 +82,8 @@ impl Stream {
                 } else {
                     Message::Text(String::from_utf8_lossy(data).to_string().into())
                 };
-                ws.send(msg).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-                ws.flush().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+                ws.send(msg).map_err(|e| io::Error::other(e.to_string()))?;
+                ws.flush().map_err(|e| io::Error::other(e.to_string()))
             }
         }
     }
@@ -115,7 +117,7 @@ impl Stream {
                         Ok(Message::Close(_)) => return Err(io::Error::new(io::ErrorKind::ConnectionReset, "ws close")),
                         Ok(_) => continue,
                         Err(tungstenite::Error::Io(e)) => return Err(e),
-                        Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
+                        Err(e) => return Err(io::Error::other(e.to_string())),
                     }
                 }
                 Ok(())
@@ -145,7 +147,7 @@ impl Stream {
                         Ok(Message::Close(_)) => return Ok(0),
                         Ok(_) => continue,
                         Err(tungstenite::Error::Io(e)) => return Err(e),
-                        Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
+                        Err(e) => return Err(io::Error::other(e.to_string())),
                     }
                 }
             }

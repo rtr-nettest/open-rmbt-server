@@ -9,7 +9,10 @@ use rustls::ServerConnection;
 /// works for WebSocket-over-TCP and WebSocket-over-TLS with no extra boxing.
 pub enum Transport {
     Plain(TcpStream),
-    Tls(rustls::StreamOwned<ServerConnection, TcpStream>),
+    // Boxed: a `ServerConnection` holds sizeable TLS state, so keeping it inline
+    // would bloat every `Transport` (and every `Stream`) to the TLS size even for
+    // plain connections. The box keeps the enum small.
+    Tls(Box<rustls::StreamOwned<ServerConnection, TcpStream>>),
 }
 
 impl Transport {
@@ -21,8 +24,8 @@ impl Transport {
     /// Perform a TLS server handshake and return a TLS transport.
     pub fn tls(stream: TcpStream, tls_cfg: Arc<rustls::ServerConfig>) -> io::Result<Self> {
         let conn = ServerConnection::new(tls_cfg)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        Ok(Transport::Tls(rustls::StreamOwned::new(conn, stream)))
+            .map_err(io::Error::other)?;
+        Ok(Transport::Tls(Box::new(rustls::StreamOwned::new(conn, stream))))
     }
 
     pub fn peer_addr(&self) -> Option<SocketAddr> {
@@ -30,17 +33,6 @@ impl Transport {
             Transport::Plain(s) => s.peer_addr().ok(),
             Transport::Tls(s)   => s.get_ref().peer_addr().ok(),
         }
-    }
-
-    /// Set the read/write timeout on the underlying TCP socket.
-    pub fn set_timeout(&self, dur: Option<std::time::Duration>) -> io::Result<()> {
-        let tcp = match self {
-            Transport::Plain(s) => s,
-            Transport::Tls(s)   => s.get_ref(),
-        };
-        tcp.set_read_timeout(dur)?;
-        tcp.set_write_timeout(dur)?;
-        Ok(())
     }
 }
 
