@@ -165,7 +165,15 @@ impl Server {
 
         loop {
             // Block until a connection arrives or the shutdown-check timeout fires.
-            poll.poll(&mut events, Some(Duration::from_millis(100)))?;
+            // A delivered signal (SIGINT/SIGTERM for shutdown) interrupts the
+            // blocking poll() syscall with EINTR — that is not a failure: loop
+            // around so the shutdown-flag check below can react to it.
+            if let Err(e) = poll.poll(&mut events, Some(Duration::from_millis(100))) {
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
 
             if self.shutdown.load(Ordering::Relaxed) {
                 break;
@@ -303,6 +311,14 @@ fn handle_connection(
         // Perform HTTP upgrade (WebSocket or plain RMBT).
         let mut stream = match detect_and_upgrade(transport) {
             Ok(s)  => s,
+            // A client that opens a socket (commonly a browser preconnect or a
+            // spare connection), completes TLS, then closes before sending the
+            // HTTP upgrade request is routine, not a protocol error — log it at
+            // DEBUG. Genuine protocol violations stay at INFO.
+            Err(e) if is_client_disconnect(&e) => {
+                debug!("[conn {}] client disconnected before upgrade: {e}", conn_id);
+                break 'session "upgrade_disconnect";
+            }
             Err(e) => { info!("[conn {}] upgrade failed: {e}", conn_id); break 'session "upgrade_failed"; }
         };
         debug!("[conn {}] upgraded to {}", conn_id, stream.kind_name());
@@ -344,8 +360,24 @@ fn handle_connection(
 
     match &greeting {
         Some(g) => info!("[conn {}] closing connection; uuid={}", conn_id, g.uuid),
+        // Keep the closing line at the same level as the reason it reports: a
+        // pre-upgrade disconnect is DEBUG, everything else stays INFO.
+        None if end_reason == "upgrade_disconnect" =>
+            debug!("[conn {}] closing connection ({})", conn_id, end_reason),
         None    => info!("[conn {}] closing connection ({})", conn_id, end_reason),
     }
+}
+
+/// True for I/O errors that mean the peer simply went away — a preconnect or
+/// spare socket closed, an RST, or a clean EOF — rather than a protocol error.
+fn is_client_disconnect(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+    )
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
