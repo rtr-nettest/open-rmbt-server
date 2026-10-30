@@ -11,7 +11,8 @@ use crate::config::{Config, SecretKey};
 use crate::config::parser::read_secret_keys;
 use crate::config::constants::SOCKET_TIMEOUT_SECS;
 use crate::events::{EventSink, ConnStats};
-use crate::stream::{Transport, detect_and_upgrade};
+use crate::stream::{Transport, Upgrade, detect_and_upgrade};
+use crate::proxy::Proxy;
 use crate::protocol::{greeting::{run_greeting, Greeting}, commands::run_commands};
 use crate::tls::build_tls_config;
 
@@ -29,6 +30,8 @@ struct WorkerCtx {
     tls_cfg: Option<Arc<rustls::ServerConfig>>,
     /// Optional structured-event logger; `None` when syslog is not configured.
     sink:    Option<Arc<EventSink>>,
+    /// Optional reverse proxy for the configured path prefix.
+    proxy:   Option<Arc<Proxy>>,
 }
 
 /// The top-level server object.
@@ -72,6 +75,19 @@ impl Server {
             None
         };
 
+        // ── Build reverse proxy ───────────────────────────────────────────────
+        let proxy = match (&config.proxy_path, &config.proxy_destination) {
+            (Some(path), Some(dest)) => match Proxy::new(path, dest) {
+                Ok(p)  => { info!("proxying {}", p.describe()); Some(Arc::new(p)) }
+                Err(e) => { error!("proxy config failed: {e}"); return Err(e); }
+            },
+            (None, None) => None,
+            _ => {
+                error!("--proxy-path and --proxy-destination must be given together");
+                anyhow::bail!("--proxy-path and --proxy-destination must be given together");
+            }
+        };
+
         // ── Bind TCP listeners ────────────────────────────────────────────────
         let mut tcp_listeners = Vec::new();
         for addr in &tcp_addrs {
@@ -103,6 +119,7 @@ impl Server {
             keys:    Arc::new(keys),
             tls_cfg,
             sink,
+            proxy,
         };
 
         let num_workers = ctx.config.num_workers;
@@ -315,8 +332,12 @@ fn handle_connection(
         // Perform HTTP upgrade (WebSocket or plain RMBT). HSTS is only meaningful
         // over TLS, so it is offered only on TLS connections and only when enabled.
         let add_hsts = is_tls && ctx.config.hsts;
-        let mut stream = match detect_and_upgrade(transport, add_hsts) {
-            Ok(s)  => s,
+        let mut stream = match detect_and_upgrade(transport, add_hsts, ctx.proxy.as_deref()) {
+            Ok(Upgrade::Rmbt(s)) => s,
+            Ok(Upgrade::Proxied(summary)) => {
+                info!("[conn {}] proxied {}", conn_id, summary);
+                break 'session "proxied";
+            }
             // A client that opens a socket (commonly a browser preconnect or a
             // spare connection), completes TLS, then closes before sending the
             // HTTP upgrade request is routine, not a protocol error — log it at

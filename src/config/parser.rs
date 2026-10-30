@@ -76,6 +76,14 @@ pub fn parse_cli(args: &[String]) -> anyhow::Result<Option<Cli>> {
                 if i < args.len() { config.syslog_target = Some(parse_syslog_target(&args[i])?); }
             }
             "--log-full-ip" => { config.log_full_ip = true; }
+            "--proxy-path" => {
+                i += 1;
+                if i < args.len() { config.proxy_path = Some(args[i].clone()); }
+            }
+            "--proxy-destination" => {
+                i += 1;
+                if i < args.len() { config.proxy_destination = Some(args[i].clone()); }
+            }
             "--help" | "-h" => { print_help(); return Ok(None); }
             "-v" | "--version" => {
                 println!("rmbtd {}", env!("RMBTD_VERSION"));
@@ -163,6 +171,8 @@ fn print_help() {
          \t-log LEVEL   Log level: info | debug | trace\n\
          \t--syslog ADDRESS  Send structured per-connection events as UDP RFC 5424 to ADDRESS (IP or IP:port; port default 514)\n\
          \t--log-full-ip  Log the full client IP (default: anonymised, last octet dropped for IPv4, past /48 for IPv6)\n\
+         \t--proxy-path PATH  Forward all requests under /PATH (any method) to the proxy destination (e.g. RMBTControlServer)\n\
+         \t--proxy-destination URL  Proxy target, http:// or https:// (default scheme), e.g. https://c01.netztest.at\n\
          \t-h, --help   Show this help\n\
          \t-v, --version Print version\n\
          \n\

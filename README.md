@@ -53,6 +53,8 @@ OPTIONS:
         -log LEVEL   Log level: info | debug | trace
         --syslog ADDRESS  Send structured per-connection events as UDP RFC 5424 to ADDRESS (IP or IP:port; port default 514)
         --log-full-ip  Log the full client IP (default: anonymised, last octet/group dropped)
+        --proxy-path PATH  Forward all requests under /PATH (any method) to the proxy destination (e.g. RMBTControlServer)
+        --proxy-destination URL  Proxy target, http:// or https:// (default scheme), e.g. https://c01.netztest.at
         -h, --help   Show this help
         -v, --version Print version
 
@@ -77,7 +79,7 @@ Events (each carries a `conn` id for correlation):
 * `close` — the outcome at end of connection: `duration_ms`, server-measured download
   (`dl_bytes`/`dl_mbps`), upload (`ul_bytes`/`ul_mbps`) and ping (`ping_count`/`ping_min_ms`/`ping_max_ms`),
   the command count, and `end` (`quit` / `disconnect` / `error` / `auth_failed` /
-  `upgrade_failed` / …). The `uuid`, `token` type and `secret` label are repeated for
+  `upgrade_failed` / `proxied` / …). The `uuid`, `token` type and `secret` label are repeated for
   correlation.
 
 By default the source IP is anonymised (last octet/group dropped), matching the local-log

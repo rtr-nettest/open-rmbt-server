@@ -6,7 +6,7 @@ mod transport;
 mod websocket_upgrade;
 
 pub use transport::Transport;
-pub use websocket_upgrade::detect_and_upgrade;
+pub use websocket_upgrade::{detect_and_upgrade, read_http_head, Upgrade};
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use tungstenite::{Message, WebSocket};

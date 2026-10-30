@@ -22,6 +22,8 @@ mio = { version = "1", features = ["net", "os-poll"] }
 # Pure-Rust TLS (no OpenSSL dependency).
 rustls        = "0.23"
 rustls-pemfile = "2"
+# Mozilla root CAs for verifying HTTPS proxy destinations.
+webpki-roots  = "1"
 
 # WebSocket framing — server-side only.
 tungstenite = { version = "0.29" }

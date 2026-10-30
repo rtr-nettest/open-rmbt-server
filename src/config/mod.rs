@@ -51,6 +51,12 @@ pub struct Config {
     /// everything past /48 for IPv6 dropped).
     /// Off by default to avoid storing personal data; affects both local logs and events.
     pub log_full_ip: bool,
+
+    // ── Reverse proxy ─────────────────────────────────────────────────────────
+    /// Path prefix (e.g. `RMBTControlServer`) whose requests are forwarded.
+    pub proxy_path:        Option<String>,
+    /// Upstream base URL (e.g. `https://c01.netztest.at`).
+    pub proxy_destination: Option<String>,
 }
 
 impl Default for Config {
@@ -67,6 +73,8 @@ impl Default for Config {
             log_level:       LevelFilter::Off,
             syslog_target:   None,
             log_full_ip:     false,
+            proxy_path:        None,
+            proxy_destination: None,
         }
     }
 }

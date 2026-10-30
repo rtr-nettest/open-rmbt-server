@@ -6,37 +6,66 @@ use log::debug;
 
 use super::{Stream, Transport};
 use crate::config::constants::HSTS_HEADER;
+use crate::proxy::Proxy;
 
 // RFC 6455 §1.3 magic suffix appended to Sec-WebSocket-Key before SHA-1.
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-/// Detect the HTTP upgrade type, complete the handshake, and return a `Stream`.
-///
-/// Called for every new connection when the server operates in HTTP/WebSocket
-/// mode (always, matching the C reference's `-w` behaviour which is now the
-/// default).
-///
-/// `add_hsts` appends a `Strict-Transport-Security` header to the HTTP
-/// responses; the caller sets it only for TLS connections when HSTS is enabled.
-pub fn detect_and_upgrade(mut transport: Transport, add_hsts: bool) -> io::Result<Stream> {
-    // HSTS header line to include on responses (empty when disabled).
-    let hsts = if add_hsts { HSTS_HEADER } else { "" };
+/// Outcome of the HTTP phase of a connection.
+pub enum Upgrade {
+    /// Upgraded to an RMBT stream (raw or WebSocket).
+    Rmbt(Stream),
+    /// Request was forwarded by the reverse proxy; carries a log summary.
+    Proxied(String),
+}
 
-    // Read until the blank line that ends the HTTP request headers.
+/// Read until the blank line that ends an HTTP header block (inclusive).
+///
+/// Reads byte-by-byte so that nothing beyond the headers is consumed, and
+/// refuses header blocks over 8 KiB.
+pub fn read_http_head<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(1024);
     let mut tmp = [0u8; 1];
     loop {
-        transport.read_exact(&mut tmp)?;
+        r.read_exact(&mut tmp)?;
         buf.push(tmp[0]);
         if buf.ends_with(b"\r\n\r\n") {
-            break;
+            return Ok(buf);
         }
         if buf.len() > 8192 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP request too large"));
         }
     }
+}
 
+/// Detect the HTTP upgrade type, complete the handshake, and return a `Stream`.
+///
+/// Called for every new connection when the server operates in HTTP/WebSocket
+/// mode (always, matching the C reference's `-w` behaviour which is now the
+/// default).  Requests under the proxy path (any method) are forwarded to the
+/// proxy destination instead.
+///
+/// `add_hsts` appends a `Strict-Transport-Security` header to the HTTP
+/// responses; the caller sets it only for TLS connections when HSTS is enabled.
+pub fn detect_and_upgrade(
+    mut transport: Transport,
+    add_hsts: bool,
+    proxy: Option<&Proxy>,
+) -> io::Result<Upgrade> {
+    // HSTS header line to include on responses (empty when disabled).
+    let hsts = if add_hsts { HSTS_HEADER } else { "" };
+
+    let buf = read_http_head(&mut transport)?;
     let req = String::from_utf8_lossy(&buf);
+
+    if let Some(proxy) = proxy {
+        let target = req.split(' ').nth(1).unwrap_or("");
+        if proxy.matches(target) {
+            let summary = proxy.handle(&mut transport, &req, hsts)?;
+            transport.close();
+            return Ok(Upgrade::Proxied(summary));
+        }
+    }
 
     if !req.starts_with("GET ") {
         debug!("unexpected HTTP method; request:\n{}", req.trim_end());
@@ -55,7 +84,7 @@ pub fn detect_and_upgrade(mut transport: Transport, add_hsts: bool) -> io::Resul
     let req_lower = req.to_ascii_lowercase();
 
     if req_lower.contains("upgrade: websocket") {
-        websocket_handshake(transport, &req, hsts)
+        websocket_handshake(transport, &req, hsts).map(Upgrade::Rmbt)
     } else if req_lower.contains("upgrade: rmbt") {
         // Plain RMBT: acknowledge the upgrade and continue without WS framing.
         let resp = format!(
@@ -65,7 +94,7 @@ pub fn detect_and_upgrade(mut transport: Transport, add_hsts: bool) -> io::Resul
              {hsts}\r\n"
         );
         transport.write_all(resp.as_bytes())?;
-        Ok(Stream::Raw(BufReader::new(transport)))
+        Ok(Upgrade::Rmbt(Stream::Raw(BufReader::new(transport))))
     } else {
         debug!("no recognized Upgrade header; request:\n{}", req.trim_end());
         // Browser or health-check request with no Upgrade header.
