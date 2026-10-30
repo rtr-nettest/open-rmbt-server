@@ -59,6 +59,22 @@ OPTIONS:
 ADDRESS examples: "443", "0.0.0.0:443", "[::]:443"
 ```
 
+IP check
+--------
+
+`POST /ip` reports the client's address as seen by this server, mirroring
+`POST /RMBTControlServer/ip` of the control server (same request and response format):
+
+```sh
+curl -X POST -H 'Content-Type: application/json' -d '{"client_ip_local":"192.168.1.5"}' https://<host>/ip
+{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","is_proxy":false}
+```
+
+`client_ip_local` is optional and only used to derive `nat_type`. Unlike the control
+server, `test_uuid` is ignored (no test database) and `is_proxy` is always `false`
+(no VPN detection). CORS preflight (`OPTIONS`) is answered, so browsers can call it
+cross-origin.
+
 Remote event logging (ELK)
 --------------------------
 
@@ -77,7 +93,7 @@ Events (each carries a `conn` id for correlation):
 * `close` — the outcome at end of connection: `duration_ms`, server-measured download
   (`dl_bytes`/`dl_mbps`), upload (`ul_bytes`/`ul_mbps`) and ping (`ping_count`/`ping_min_ms`/`ping_max_ms`),
   the command count, and `end` (`quit` / `disconnect` / `error` / `auth_failed` /
-  `upgrade_failed` / …). The `uuid`, `token` type and `secret` label are repeated for
+  `upgrade_failed` / `ip_check` / …). The `uuid`, `token` type and `secret` label are repeated for
   correlation.
 
 By default the source IP is anonymised (last octet/group dropped), matching the local-log

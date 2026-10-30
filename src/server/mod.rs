@@ -11,7 +11,7 @@ use crate::config::{Config, SecretKey};
 use crate::config::parser::read_secret_keys;
 use crate::config::constants::SOCKET_TIMEOUT_SECS;
 use crate::events::{EventSink, ConnStats};
-use crate::stream::{Transport, detect_and_upgrade};
+use crate::stream::{Transport, Upgrade, detect_and_upgrade};
 use crate::protocol::{greeting::{run_greeting, Greeting}, commands::run_commands};
 use crate::tls::build_tls_config;
 
@@ -316,7 +316,11 @@ fn handle_connection(
         // over TLS, so it is offered only on TLS connections and only when enabled.
         let add_hsts = is_tls && ctx.config.hsts;
         let mut stream = match detect_and_upgrade(transport, add_hsts) {
-            Ok(s)  => s,
+            Ok(Upgrade::Rmbt(s)) => s,
+            Ok(Upgrade::IpCheck(summary)) => {
+                info!("[conn {}] ip check {}", conn_id, summary);
+                break 'session "ip_check";
+            }
             // A client that opens a socket (commonly a browser preconnect or a
             // spare connection), completes TLS, then closes before sending the
             // HTTP upgrade request is routine, not a protocol error — log it at
