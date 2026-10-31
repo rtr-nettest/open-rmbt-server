@@ -48,7 +48,7 @@ OPTIONS:
         --hsts       Send an HSTS header (Strict-Transport-Security: max-age=31536000) on TLS responses
         -S PATH      Secret key file (default: secret.key)
         -t N         Worker thread count  (default: 200)
-        --no-token-check  Accept all tokens without HMAC verification (testing/debugging only)
+        --no-token-check  Accept all measurement tokens without HMAC verification (testing/debugging only; /ip still checks tokens)
         --v2-only    Accept only v2 tokens (SHA256, IP+time bound); reject legacy v1 tokens
         -log LEVEL   Log level: info | debug | trace
         --syslog ADDRESS  Send structured per-connection events as UDP RFC 5424 to ADDRESS (IP or IP:port; port default 514)
@@ -58,6 +58,38 @@ OPTIONS:
 
 ADDRESS examples: "443", "0.0.0.0:443", "[::]:443"
 ```
+
+IP check
+--------
+
+`POST /ip` reports the client's address as seen by this server, modelled on
+`POST /RMBTControlServer/ip` of the control server:
+
+```sh
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"token":"<test_token from /testRequest>","client_ip_local":"192.168.1.5"}' https://<host>/ip
+{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","matching_ip":true,"signature":"…"}
+```
+
+The reported `ip` is always the address of the TCP connection; it cannot be set by the
+client. `client_ip_local` is optional and only used to derive `nat_type`. Other request
+fields (e.g. `test_uuid`) are ignored. There is no `is_proxy` field: this server does no
+VPN/proxy detection.
+
+`token` is optional: the same test token (`<v1>_#v2#<v2>`) the client uses for the speed
+test. Without it the answer contains only `v`, `ip` and `nat_type` and is not signed. If a
+token is sent, its v1 part must be valid for one of the keys in the secret key file, within the same
+time window as for the speed test (20 s early to 90 s late); otherwise the request is
+refused with 403. The matching key, i.e. the one of the control server that issued the
+token, signs the answer:
+`signature = HMAC-SHA256(key, ip16 ‖ uuid16)`, base64, with the open test UUID from the
+token. `matching_ip` is `true` if the v2 part is valid for the
+connecting address, i.e. the control server issued the token for the same IP this server
+sees. `--no-token-check` does not apply to `/ip`: it only disables the token check of the
+measurement. See [ip-signature.md](ip-signature.md) for
+the format and control-server verification.
+
+CORS preflight (`OPTIONS`) is answered, so browsers can call it cross-origin.
 
 Remote event logging (ELK)
 --------------------------
@@ -77,7 +109,7 @@ Events (each carries a `conn` id for correlation):
 * `close` — the outcome at end of connection: `duration_ms`, server-measured download
   (`dl_bytes`/`dl_mbps`), upload (`ul_bytes`/`ul_mbps`) and ping (`ping_count`/`ping_min_ms`/`ping_max_ms`),
   the command count, and `end` (`quit` / `disconnect` / `error` / `auth_failed` /
-  `upgrade_failed` / …). The `uuid`, `token` type and `secret` label are repeated for
+  `upgrade_failed` / `ip_check` / …). The `uuid`, `token` type and `secret` label are repeated for
   correlation.
 
 By default the source IP is anonymised (last octet/group dropped), matching the local-log

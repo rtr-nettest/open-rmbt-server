@@ -3,7 +3,7 @@ use std::net::{TcpListener, TcpStream, SocketAddr};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
-use log::{info, error, debug};
+use log::{info, warn, error, debug};
 use mio::{Events, Interest, Poll, Token};
 use mio::net::TcpListener as MioListener;
 
@@ -11,7 +11,7 @@ use crate::config::{Config, SecretKey};
 use crate::config::parser::read_secret_keys;
 use crate::config::constants::SOCKET_TIMEOUT_SECS;
 use crate::events::{EventSink, ConnStats};
-use crate::stream::{Transport, detect_and_upgrade};
+use crate::stream::{Transport, Upgrade, detect_and_upgrade};
 use crate::protocol::{greeting::{run_greeting, Greeting}, commands::run_commands};
 use crate::tls::build_tls_config;
 
@@ -46,13 +46,19 @@ impl Server {
         sink: Option<Arc<EventSink>>,
     ) -> anyhow::Result<(Self, Vec<TcpListener>, Vec<TcpListener>)> {
         // ── Load secret keys ──────────────────────────────────────────────────
-        let keys = if config.check_token {
-            read_secret_keys(&config.secret_key_path)
-                .map_err(|e| { error!("failed to load secret keys: {e}"); e })?
-        } else {
-            info!("token checking disabled — no secret keys loaded");
-            Vec::new()
+        // Keys are loaded even with --no-token-check: that flag only affects the
+        // measurement, while /ip always verifies tokens and signs with them.
+        let keys = match read_secret_keys(&config.secret_key_path) {
+            Ok(keys) => keys,
+            Err(e) if !config.check_token => {
+                warn!("no secret keys loaded ({e}); /ip will refuse every token");
+                Vec::new()
+            }
+            Err(e) => { error!("failed to load secret keys: {e}"); return Err(e); }
         };
+        if !config.check_token {
+            info!("token checking disabled for the measurement (not for /ip)");
+        }
         info!("loaded {} secret key(s) from '{}'", keys.len(), config.secret_key_path);
 
         // ── Build TLS config ──────────────────────────────────────────────────
@@ -315,8 +321,12 @@ fn handle_connection(
         // Perform HTTP upgrade (WebSocket or plain RMBT). HSTS is only meaningful
         // over TLS, so it is offered only on TLS connections and only when enabled.
         let add_hsts = is_tls && ctx.config.hsts;
-        let mut stream = match detect_and_upgrade(transport, add_hsts) {
-            Ok(s)  => s,
+        let mut stream = match detect_and_upgrade(transport, add_hsts, &ctx.keys, conn_id) {
+            Ok(Upgrade::Rmbt(s)) => s,
+            Ok(Upgrade::IpCheck(summary)) => {
+                info!("[conn {}] ip check {}", conn_id, summary);
+                break 'session "ip_check";
+            }
             // A client that opens a socket (commonly a browser preconnect or a
             // spare connection), completes TLS, then closes before sending the
             // HTTP upgrade request is routine, not a protocol error — log it at

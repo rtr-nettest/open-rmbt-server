@@ -34,6 +34,15 @@ impl Transport {
             Transport::Tls(s)   => s.get_ref().peer_addr().ok(),
         }
     }
+
+    /// Send a TLS close_notify (no-op for plain TCP) after a plain HTTP
+    /// response, so the client sees a clean end of stream.
+    pub fn close(&mut self) {
+        if let Transport::Tls(s) = self {
+            s.conn.send_close_notify();
+            let _ = s.flush();
+        }
+    }
 }
 
 impl Read for Transport {

@@ -158,7 +158,7 @@ fn print_help() {
          \t--hsts       Send an HSTS header (Strict-Transport-Security: max-age=31536000) on TLS responses\n\
          \t-S PATH      Secret key file (default: secret.key)\n\
          \t-t N         Worker thread count  (default: 200)\n\
-         \t--no-token-check  Accept all tokens without HMAC verification (testing/debugging only)\n\
+         \t--no-token-check  Accept all measurement tokens without HMAC verification (testing/debugging only; /ip still checks tokens)\n\
          \t--v2-only    Accept only v2 tokens (SHA256, IP+time bound); reject legacy v1 tokens\n\
          \t-log LEVEL   Log level: info | debug | trace\n\
          \t--syslog ADDRESS  Send structured per-connection events as UDP RFC 5424 to ADDRESS (IP or IP:port; port default 514)\n\
