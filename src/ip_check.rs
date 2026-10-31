@@ -27,10 +27,10 @@ pub fn matches(target: &str) -> bool {
 /// control server: the client's address as seen by this server, its IP
 /// version and the NAT type derived from the optional `client_ip_local`.
 ///
-/// The request must carry the speed-test `token`.  Its v1 part must be valid
-/// for one of `keys`, and that key signs the answer, so that the control
+/// The request may carry the speed-test `token`.  Its v1 part must then be
+/// valid for one of `keys`, and that key signs the answer, so that the control
 /// server which issued the token can verify the address; see
-/// `ip-signature.md`.  Unknown request fields (e.g. `test_uuid`) are ignored.
+/// `ip-signature.md`.  `--no-token-check` does not apply here.  Unknown request fields (e.g. `test_uuid`) are ignored.
 ///
 /// `head` is the already-read request header block; `hsts` the HSTS header
 /// line to add (empty when disabled).  Returns a short summary for logging.
@@ -161,13 +161,12 @@ fn bad_request(msg: impl Into<String>) -> IpError {
 
 /// Build the answer for request `body` from a client at `public`.
 ///
-/// The request must carry the speed-test `token` (`<v1>_#v2#<v2>` or plain
-/// v1).  The v1 part must be valid (HMAC and time window), otherwise the
-/// request is refused with 403.  The key that validated it signs the answer,
-/// and `matching_ip` tells whether the v2 part is valid for `public`,
-/// i.e. whether the control server issued the token for the address this
-/// server sees.  Without loaded keys (`--no-token-check`) the token is still
-/// required but not checked, and the answer has no `matching_ip` and no signature.
+/// The request may carry the speed-test `token` (`<v1>_#v2#<v2>` or plain
+/// v1).  Without a token the answer is unsigned.  With a token, the v1 part
+/// must be valid (HMAC and time window), otherwise the request is refused with
+/// 403.  The key that validated it signs the answer, and `matching_ip` tells
+/// whether the v2 part is valid for `public`, i.e. whether the control server
+/// issued the token for the address this server sees.
 fn ip_response(
     body: &[u8],
     public: IpAddr,
@@ -198,8 +197,8 @@ fn ip_response(
         .map_err(|_| bad_request("client_ip_local must be valid IP address"))?;
 
     let token = match obj.get("token") {
-        Some(Value::String(s)) if !s.trim().is_empty() => s.as_str(),
-        None | Some(Value::Null | Value::String(_))   => return Err(bad_request("token is missing")),
+        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.as_str()),
+        None | Some(Value::Null | Value::String(_))   => None,
         Some(_) => return Err(bad_request("Invalid request format: token must be a string")),
     };
 
@@ -209,21 +208,22 @@ fn ip_response(
     let mut json = format!(r#"{{"v":"{v}","ip":"{public}","nat_type":"{nat_type}""#);
     let mut note = nat_type;
 
-    if keys.is_empty() {
-        note.push_str(", token not checked");
-    } else {
-        let checked = check_ip_token(token, keys, conn_id, public)
-            .map_err(|rejected| ("403 Forbidden", token_error(&rejected)))?;
-        // The v1 token starts with the open test UUID (without the "O" prefix).
-        let uuid = parse_uuid(&checked.open_test_uuid)
-            .ok_or_else(|| ("403 Forbidden", "invalid token: malformed open test UUID".to_string()))?;
-        let signature = ip_signature(checked.key.key.as_bytes(), public, &uuid);
-        json.push_str(&format!(
-            r#","matching_ip":{},"signature":"{}""#,
-            checked.matching_ip,
-            B64.encode(signature),
-        ));
-        note.push_str(&format!(", key '{}', matching_ip={}, signed", checked.key.label, checked.matching_ip));
+    match token {
+        None => note.push_str(", no token, unsigned"),
+        Some(token) => {
+            let checked = check_ip_token(token, keys, conn_id, public)
+                .map_err(|rejected| ("403 Forbidden", token_error(&rejected)))?;
+            // The v1 token starts with the open test UUID (without the "O" prefix).
+            let uuid = parse_uuid(&checked.open_test_uuid)
+                .ok_or_else(|| ("403 Forbidden", "invalid token: malformed open test UUID".to_string()))?;
+            let signature = ip_signature(checked.key.key.as_bytes(), public, &uuid);
+            json.push_str(&format!(
+                r#","matching_ip":{},"signature":"{}""#,
+                checked.matching_ip,
+                B64.encode(signature),
+            ));
+            note.push_str(&format!(", key '{}', matching_ip={}, signed", checked.key.label, checked.matching_ip));
+        }
     }
     json.push('}');
 
@@ -388,21 +388,28 @@ mod tests {
         assert_eq!(status(&format!(r#"{{"token":"{tok}","client_ip_local":"nope"}}"#)), "400");
         assert_eq!(status(&format!(r#"{{"token":"{tok}","client_ip_local":5}}"#)), "400");
         assert_eq!(status(&format!(r#"{{"token":"{tok}","client_ip_local":{{}}}}"#)), "400");
+        assert_eq!(status(r#"{"token":5}"#), "400");
     }
 
     #[test]
-    fn token_is_mandatory_and_v1_must_be_valid() {
-        assert_eq!(status("{}"), "400");
-        assert_eq!(status(r#"{"token":null}"#), "400");
-        assert_eq!(status(r#"{"token":"  "}"#), "400");
-        assert_eq!(status(r#"{"token":5}"#), "400");
+    fn without_token_the_answer_is_unsigned() {
+        let ip = "203.0.113.1".parse().unwrap();
+        for body in ["{}", r#"{"token":null}"#, r#"{"token":"  "}"#, r#"{"client_ip_local":"192.168.1.5"}"#] {
+            let a = ip_response(body.as_bytes(), ip, &keys(), 1).ok().unwrap();
+            assert!(!a.json.contains("matching_ip") && !a.json.contains("signature"), "{}", a.json);
+            assert!(a.note.contains("unsigned"), "{}", a.note);
+        }
+        let a = ip_response(br#"{"client_ip_local":"192.168.1.5"}"#, ip, &keys(), 1).ok().unwrap();
+        assert_eq!(a.json, r#"{"v":"4","ip":"203.0.113.1","nat_type":"nat_local_to_public_ipv4"}"#);
+    }
+
+    #[test]
+    fn a_given_token_must_be_valid() {
         assert_eq!(status(r#"{"token":"garbage"}"#), "403");
         let unknown = make_test_token("unknown-secret", UUID, now(), "203.0.113.1".parse().unwrap());
         assert_eq!(status(&format!(r#"{{"token":"{unknown}"}}"#)), "403");
         let expired = make_test_token("control-a-secret", UUID, now() - 3600, "203.0.113.1".parse().unwrap());
         assert_eq!(status(&format!(r#"{{"token":"{expired}"}}"#)), "403");
-        // The former open_test_uuid field is ignored like any unknown field.
-        assert_eq!(status(&format!(r#"{{"open_test_uuid":"O{UUID}"}}"#)), "400");
     }
 
     #[test]
@@ -434,12 +441,13 @@ mod tests {
     }
 
     #[test]
-    fn unchecked_without_keys() {
-        // --no-token-check: token still required, but neither checked nor used to sign.
+    fn without_keys_a_token_is_refused() {
+        // No secret key file (possible with --no-token-check): no token can be verified.
         let ip = "203.0.113.1".parse().unwrap();
-        let none = ip_response(br#"{"token":"anything"}"#, ip, &[], 1).ok().unwrap();
-        assert_eq!(none.json, r#"{"v":"4","ip":"203.0.113.1","nat_type":"is_ipv4"}"#);
-        assert!(ip_response(b"{}", ip, &[], 1).is_err());
+        let body = format!(r#"{{"token":"{}"}}"#, token_b("203.0.113.1"));
+        assert!(ip_response(body.as_bytes(), ip, &[], 1).is_err());
+        assert_eq!(ip_response(b"{}", ip, &[], 1).ok().unwrap().json,
+                   r#"{"v":"4","ip":"203.0.113.1","nat_type":"is_ipv4"}"#);
     }
 
     #[test]

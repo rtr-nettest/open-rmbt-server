@@ -48,7 +48,7 @@ OPTIONS:
         --hsts       Send an HSTS header (Strict-Transport-Security: max-age=31536000) on TLS responses
         -S PATH      Secret key file (default: secret.key)
         -t N         Worker thread count  (default: 200)
-        --no-token-check  Accept all tokens without HMAC verification (testing/debugging only)
+        --no-token-check  Accept all measurement tokens without HMAC verification (testing/debugging only; /ip still checks tokens)
         --v2-only    Accept only v2 tokens (SHA256, IP+time bound); reject legacy v1 tokens
         -log LEVEL   Log level: info | debug | trace
         --syslog ADDRESS  Send structured per-connection events as UDP RFC 5424 to ADDRESS (IP or IP:port; port default 514)
@@ -76,16 +76,17 @@ client. `client_ip_local` is optional and only used to derive `nat_type`. Other 
 fields (e.g. `test_uuid`) are ignored. There is no `is_proxy` field: this server does no
 VPN/proxy detection.
 
-`token` is mandatory: the same test token (`<v1>_#v2#<v2>`) the client uses for the speed
-test. Its v1 part must be valid for one of the keys in the secret key file, within the same
+`token` is optional: the same test token (`<v1>_#v2#<v2>`) the client uses for the speed
+test. Without it the answer contains only `v`, `ip` and `nat_type` and is not signed. If a
+token is sent, its v1 part must be valid for one of the keys in the secret key file, within the same
 time window as for the speed test (20 s early to 90 s late); otherwise the request is
 refused with 403. The matching key, i.e. the one of the control server that issued the
 token, signs the answer:
 `signature = HMAC-SHA256(key, ip16 ‖ uuid16)`, base64, with the open test UUID from the
 token. `matching_ip` is `true` if the v2 part is valid for the
 connecting address, i.e. the control server issued the token for the same IP this server
-sees. With `--no-token-check` (no keys loaded) the token is required but not checked, and
-the answer has neither `matching_ip` nor a signature. See [ip-signature.md](ip-signature.md) for
+sees. `--no-token-check` does not apply to `/ip`: it only disables the token check of the
+measurement. See [ip-signature.md](ip-signature.md) for
 the format and control-server verification.
 
 CORS preflight (`OPTIONS`) is answered, so browsers can call it cross-origin.

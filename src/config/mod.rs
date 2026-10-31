@@ -35,8 +35,9 @@ pub struct Config {
     // ── Token authentication ──────────────────────────────────────────────────
     /// Path to the secret.key file (multi-key, one per line).
     pub secret_key_path: String,
-    /// When false, incoming tokens are accepted without HMAC verification.
-    /// Useful for testing. Mirrors C's `CHECK_TOKEN` constant.
+    /// When false, measurement tokens are accepted without HMAC verification.
+    /// Useful for testing. Mirrors C's `CHECK_TOKEN` constant.  Does not apply
+    /// to `/ip`, which always checks the token it is given.
     pub check_token: bool,
     /// When true, only v2 tokens (SHA256, open-rmbt-udp-ping schema, bound to source
     /// IP + time) are accepted; legacy v1 tokens are rejected.

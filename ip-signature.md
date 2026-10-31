@@ -21,18 +21,20 @@ Content-Type: application/json
 
 | Field | Meaning |
 |---|---|
-| `token` (request) | **Mandatory.** The `test_token` from `/testRequest`, unchanged, as used for the speed test: `<open_test_uuid>_<test_slot>_<HMAC-SHA1>` optionally followed by `_#v2#<base64>`. Missing or blank: 400. |
+| `token` (request) | Optional. The `test_token` from `/testRequest`, unchanged, as used for the speed test: `<open_test_uuid>_<test_slot>_<HMAC-SHA1>` optionally followed by `_#v2#<base64>`. Missing, null or blank: the answer is unsigned (no `matching_ip`, no `signature`). Not a string: 400. |
 | `client_ip_local` (request) | Optional; only used for `nat_type`. Not signed, because the client supplies it. |
 | other request fields | Ignored (e.g. `test_uuid`, `client_uuid`, the former `open_test_uuid`). |
 | `ip` | The TCP peer address in canonical text form. IPv4 that reaches a dual-stack listener as `::ffff:a.b.c.d` is reported as IPv4. The client cannot set it. |
-| `matching_ip` | `true` if the v2 part of the token is valid for `ip` (checked with the key that validated v1), i.e. the control server issued the token for the address this server sees. `false` if it differs (typically the other address family, or behind a different NAT) or if there is no or a broken v2 part. |
-| `signature` | 32 bytes, base64 (see below). |
+| `matching_ip` | Only with a token. `true` if the v2 part of the token is valid for `ip` (checked with the key that validated v1), i.e. the control server issued the token for the address this server sees. `false` if it differs (typically the other address family, or behind a different NAT) or if there is no or a broken v2 part. |
+| `signature` | Only with a token. 32 bytes, base64 (see below). |
 
 There is no `is_proxy` field, because this server does no VPN or proxy detection.
 
 ### Token check
 
-The server checks the token exactly as the speed test does, with one difference: it never waits.
+Without a token, `/ip` answers like the control server's `/ip`: `v`, `ip` and `nat_type`,
+unsigned. If a token is sent, the server checks it exactly as the speed test does, with one
+difference: it never waits.
 
 1. **v1 must be valid.** `HMAC-SHA1(key, "<uuid>_<slot>")` must match for one of the keys in
    `secret.key`, and `slot` must lie in the speed test's window (at most 20 s early, at most
@@ -44,10 +46,10 @@ The server checks the token exactly as the speed test does, with one difference:
 3. **v2 is informational.** It is checked only with that same key and only sets `matching_ip`; it
    never causes a rejection.
 
-With `--no-token-check` (no keys loaded) the token is still required but not checked, and the
-answer has neither `matching_ip` nor `signature`.
+`--no-token-check` does not apply to `/ip`. It only disables the token check of the
+measurement; `/ip` checks and signs as described above.
 
-Consequence of the time window: the client has to call `/ip` within 20 s before to 90 s after
+Consequence of the time window: to get a signed answer, the client has to call `/ip` within 20 s before to 90 s after
 the test slot, for example right before or alongside the speed test.
 
 ## Signature
