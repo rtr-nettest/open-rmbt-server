@@ -68,7 +68,7 @@ IP check
 ```sh
 curl -X POST -H 'Content-Type: application/json' \
   -d '{"token":"<test_token from /testRequest>","client_ip_local":"192.168.1.5"}' https://<host>/ip
-{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","matching_ip":true,"salt":"Na6v…OYg==","signature":"SA3o…5bM="}
+{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","matching_ip":true,"signature":"…"}
 ```
 
 The reported `ip` is always the address of the TCP connection; it cannot be set by the
@@ -81,8 +81,8 @@ test. Its v1 part must be valid for one of the keys in the secret key file, with
 time window as for the speed test (20 s early to 90 s late); otherwise the request is
 refused with 403. The matching key, i.e. the one of the control server that issued the
 token, signs the answer:
-`signature = HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)`, base64, with a random 16-byte `salt`
-and the open test UUID from the token. `matching_ip` is `true` if the v2 part is valid for the
+`signature = HMAC-SHA256(key, ip16 ‖ uuid16)`, base64, with the open test UUID from the
+token. `matching_ip` is `true` if the v2 part is valid for the
 connecting address, i.e. the control server issued the token for the same IP this server
 sees. With `--no-token-check` (no keys loaded) the token is required but not checked, and
 the answer has neither `matching_ip` nor a signature. See [ip-signature.md](ip-signature.md) for

@@ -16,7 +16,7 @@ Content-Type: application/json
 
 ```json
 {"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","matching_ip":true,
- "salt":"Na6vDcFHJuoGXea5/f2OYg==","signature":"SA3oklIWn44mKpliDzkt00loUhAZbksRo/7asy995bM="}
+ "signature":"…"}
 ```
 
 | Field | Meaning |
@@ -26,7 +26,6 @@ Content-Type: application/json
 | other request fields | Ignored (e.g. `test_uuid`, `client_uuid`, the former `open_test_uuid`). |
 | `ip` | The TCP peer address in canonical text form. IPv4 that reaches a dual-stack listener as `::ffff:a.b.c.d` is reported as IPv4. The client cannot set it. |
 | `matching_ip` | `true` if the v2 part of the token is valid for `ip` (checked with the key that validated v1), i.e. the control server issued the token for the address this server sees. `false` if it differs (typically the other address family, or behind a different NAT) or if there is no or a broken v2 part. |
-| `salt` | 16 random bytes (OS RNG), base64; new for every answer. |
 | `signature` | 32 bytes, base64 (see below). |
 
 There is no `is_proxy` field, because this server does no VPN or proxy detection.
@@ -46,7 +45,7 @@ The server checks the token exactly as the speed test does, with one difference:
    never causes a rejection.
 
 With `--no-token-check` (no keys loaded) the token is still required but not checked, and the
-answer has neither `matching_ip` nor `salt`/`signature`.
+answer has neither `matching_ip` nor `signature`.
 
 Consequence of the time window: the client has to call `/ip` within 20 s before to 90 s after
 the test slot, for example right before or alongside the speed test.
@@ -54,12 +53,11 @@ the test slot, for example right before or alongside the speed test.
 ## Signature
 
 ```
-signature = HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)          48 bytes of input, 32 bytes out
+signature = HMAC-SHA256(key, ip16 ‖ uuid16)          32 bytes of input, 32 bytes out
 ```
 
 - `key`: the key that validated the token's v1 part, as UTF-8 bytes. This is the control
   server's `test_server.key` for this measurement server.
-- `salt`: the 16 bytes from the answer.
 - `ip16`: the address as 16 bytes. IPv6 as-is; IPv4 as IPv4-mapped IPv6 `::ffff:a.b.c.d`, the
   same mapping as `RmbtUdpTokenFactory.toMappedIpv6Bytes`.
 - `uuid16`: the open test UUID at the start of the token, as 16 bytes, big-endian (Java:
@@ -73,24 +71,18 @@ Test vector, computed independently by the Rust implementation and by the Java v
 
 ```
 key       = "testkey12345"
-salt      = 07 07 07 07 07 07 07 07 07 07 07 07 07 07 07 07   (BwcHBwcHBwcHBwcHBwcHBw==)
-ip        = 203.0.113.1                                       (ip16 = ::ffff:203.0.113.1)
+ip        = 203.0.113.1   (ip16 = ::ffff:203.0.113.1)
 uuid      = f71d53f4-c67c-4b99-b319-979f714cd408
-signature = rHe5w73IaBy+Yae/MiewbcqDdJzFZnMaizqbKZLQRj4=
+signature = HVDXiyb2awlRvPhVIx5y/ERz113y0rnCMCHyU2ktAcA=
 ```
 
-### Why concatenation and not `salt ⊕ ip ⊕ uuid`
+### No salt
 
-With XOR the three values collapse into one 16-byte HMAC input, and the client both learns and
-supplies the salt. From one valid answer `(salt, ip, uuid, sig)` a client could compute
-`salt' = salt ⊕ ip ⊕ uuid ⊕ ip' ⊕ uuid'` for **any** IP `ip'` and **any** test `uuid'`. The HMAC
-input `salt' ⊕ ip' ⊕ uuid'` would equal the original, so `sig` would verify: a single signature
-could be forged for every IP and every test. Concatenation keeps the fields separate, so the
-signature binds exactly this salt, this IP and this test.
+There is no salt. The open test UUID is random and unique per test, so it already makes the
+HMAC input unique, and the control server checks `ip` and `uuid` directly. A repeated request
+for the same IP and test returns the same signature, which proves nothing new.
 
-The salt makes every answer unique: the same IP and test get a new signature each time. Since
-the control server checks `ip` and `uuid` directly, the salt adds no security of its own, but
-it does no harm either.
+The two fields are concatenated, not XORed, so the signature binds exactly this IP and this test.
 
 ## Control server: verifier (Java)
 
@@ -118,17 +110,16 @@ import java.util.UUID;
  * for a request carrying a valid test token:
  *
  * <pre>
- *   signature = HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)
+ *   signature = HMAC-SHA256(key, ip16 ‖ uuid16)
  * </pre>
  *
- * {@code key} is the measurement server's secret ({@code test_server.key}), {@code salt} the
- * 16 random bytes from the answer, {@code ip16} the signed address as 16 bytes (IPv4 as
+ * {@code key} is the measurement server's secret ({@code test_server.key}), {@code ip16} the
+ * signed address as 16 bytes (IPv4 as
  * IPv4-mapped IPv6, as in the v2 token) and {@code uuid16} the open test UUID as 16 bytes
  * (big-endian, without the "O" prefix).
  */
 public final class IpSignatureVerifier {
 
-    public static final int SALT_LENGTH = 16;
     public static final int SIGNATURE_LENGTH = 32;
 
     private IpSignatureVerifier() {
@@ -139,22 +130,20 @@ public final class IpSignatureVerifier {
      *         under {@code key}; false for any malformed input
      */
     public static boolean verify(final String key, final UUID openTestUuid, final InetAddress ip,
-                                 final byte[] salt, final byte[] signature) {
+                                 final byte[] signature) {
         if (key == null || openTestUuid == null || ip == null
-                || salt == null || salt.length != SALT_LENGTH
                 || signature == null || signature.length != SIGNATURE_LENGTH) {
             return false;
         }
         // Constant-time comparison: no timing hints about how much of a guess was right.
-        return MessageDigest.isEqual(sign(key, openTestUuid, ip, salt), signature);
+        return MessageDigest.isEqual(sign(key, openTestUuid, ip), signature);
     }
 
     /** Computes the signature; the measurement server does the same in Rust. */
-    static byte[] sign(final String key, final UUID openTestUuid, final InetAddress ip, final byte[] salt) {
+    static byte[] sign(final String key, final UUID openTestUuid, final InetAddress ip) {
         try {
             final Mac mac = Mac.getInstance("HmacSHA256");
             mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            mac.update(salt);
             mac.update(toMappedIpv6Bytes(ip));
             mac.update(ByteBuffer.allocate(16)
                     .putLong(openTestUuid.getMostSignificantBits())
@@ -191,12 +180,10 @@ Unit test for the vector above:
 ```java
 @Test
 void verifiesReferenceVector() {
-    byte[] salt = new byte[16];
-    Arrays.fill(salt, (byte) 7);
     UUID uuid = UUID.fromString("f71d53f4-c67c-4b99-b319-979f714cd408");
-    byte[] sig = Base64.getDecoder().decode("rHe5w73IaBy+Yae/MiewbcqDdJzFZnMaizqbKZLQRj4=");
-    assertTrue(IpSignatureVerifier.verify("testkey12345", uuid, InetAddresses.forString("203.0.113.1"), salt, sig));
-    assertFalse(IpSignatureVerifier.verify("testkey12345", uuid, InetAddresses.forString("203.0.113.2"), salt, sig));
+    byte[] sig = Base64.getDecoder().decode("HVDXiyb2awlRvPhVIx5y/ERz113y0rnCMCHyU2ktAcA=");
+    assertTrue(IpSignatureVerifier.verify("testkey12345", uuid, InetAddresses.forString("203.0.113.1"), sig));
+    assertFalse(IpSignatureVerifier.verify("testkey12345", uuid, InetAddresses.forString("203.0.113.2"), sig));
 }
 ```
 
@@ -235,12 +222,12 @@ family. A failed call (e.g. no IPv6) just means there is no signature for that f
 
 ```json
 "ip_signatures": [
-  {"ip":"203.0.113.7", "salt":"Na6v…OYg==", "signature":"SA3o…5bM="},
-  {"ip":"2001:db8::7", "salt":"…",         "signature":"…"}
+  {"ip":"203.0.113.7", "signature":"…"},
+  {"ip":"2001:db8::7", "signature":"…"}
 ]
 ```
 
-The client copies `ip`, `salt` and `signature` unchanged from the `/ip` answers. Verification
+The client copies `ip` and `signature` unchanged from the `/ip` answers. Verification
 runs inside `processResultRequest`, after the existing lock and `STARTED` check, with the key
 this control server stores for the assigned measurement server:
 
@@ -251,7 +238,6 @@ private final List<IpSignatureRequest> ipSignatures;
 
 // IpSignatureRequest (new, @Builder @Getter like ResultRequest)
 @JsonProperty("ip")        private final String ip;
-@JsonProperty("salt")      private final String salt;       // base64, 16 bytes
 @JsonProperty("signature") private final String signature;  // base64, 32 bytes
 
 // ResultServiceImpl.processResultRequest — after verifyTestStatus(...)
@@ -271,7 +257,6 @@ private void processIpSignatures(ResultRequest resultRequest, Test test) {
         try {
             final InetAddress ip = InetAddresses.forString(s.getIp());
             final boolean valid = IpSignatureVerifier.verify(key, test.getOpenTestUuid(), ip,
-                    Base64.getDecoder().decode(s.getSalt()),
                     Base64.getDecoder().decode(s.getSignature()));
             if (!valid) {
                 log.warn("test {}: invalid ip signature for {}", test.getUuid(), HelperFunctions.anonymizeIp(ip));
@@ -338,7 +323,6 @@ still valid; it just has no verified IP. Store nothing for that family and log a
 | Reuse it after the test | Refused by the control server: the status is no longer `STARTED`. The `open_test_uuid` does become public in open data, but only once the test has finished. |
 | Submit it twice in the same test | Harmless: it is the same IP for the same test, and `/result` runs only once. |
 | Claim a different IP | Requires the key (HMAC), and the measurement server signs only the TCP peer address. |
-| Choose a salt to fit another IP/test | Not possible with concatenation (see the XOR section). |
 | Signature from another measurement server, or with another control server's key | Fails: verification uses only the key this control server stores for the assigned server. |
 
 There is no timestamp in the signature. Its lifetime is bounded twice: the measurement server

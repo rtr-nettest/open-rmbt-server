@@ -772,7 +772,6 @@ dependencies = [
  "chrono",
  "env_logger",
  "fastrand",
- "getrandom 0.3.4",
  "hmac",
  "lazy_static",
  "log",

@@ -100,9 +100,7 @@ pub fn handle(
                 ("415 Unsupported Media Type", "Accept: application/json\r\n".into(),
                  error_body("Content-Type must be application/json"))
             } else {
-                let mut salt = [0u8; 16];
-                getrandom::fill(&mut salt).map_err(io::Error::other)?;
-                match ip_response(&buf, public, keys, conn_id, salt) {
+                match ip_response(&buf, public, keys, conn_id) {
                     Ok(answer) => {
                         note = Some(answer.note);
                         ("200 OK", String::new(), answer.json)
@@ -165,8 +163,8 @@ fn bad_request(msg: impl Into<String>) -> IpError {
 ///
 /// The request must carry the speed-test `token` (`<v1>_#v2#<v2>` or plain
 /// v1).  The v1 part must be valid (HMAC and time window), otherwise the
-/// request is refused with 403.  The key that validated it signs the answer
-/// with `salt`, and `matching_ip` tells whether the v2 part is valid for `public`,
+/// request is refused with 403.  The key that validated it signs the answer,
+/// and `matching_ip` tells whether the v2 part is valid for `public`,
 /// i.e. whether the control server issued the token for the address this
 /// server sees.  Without loaded keys (`--no-token-check`) the token is still
 /// required but not checked, and the answer has no `matching_ip` and no signature.
@@ -175,7 +173,6 @@ fn ip_response(
     public: IpAddr,
     keys: &[SecretKey],
     conn_id: usize,
-    salt: [u8; 16],
 ) -> Result<IpAnswer, IpError> {
     if body.is_empty() {
         return Err(bad_request("Required request body is missing"));
@@ -220,11 +217,10 @@ fn ip_response(
         // The v1 token starts with the open test UUID (without the "O" prefix).
         let uuid = parse_uuid(&checked.open_test_uuid)
             .ok_or_else(|| ("403 Forbidden", "invalid token: malformed open test UUID".to_string()))?;
-        let signature = ip_signature(checked.key.key.as_bytes(), &salt, public, &uuid);
+        let signature = ip_signature(checked.key.key.as_bytes(), public, &uuid);
         json.push_str(&format!(
-            r#","matching_ip":{},"salt":"{}","signature":"{}""#,
+            r#","matching_ip":{},"signature":"{}""#,
             checked.matching_ip,
-            B64.encode(salt),
             B64.encode(signature),
         ));
         note.push_str(&format!(", key '{}', matching_ip={}, signed", checked.key.label, checked.matching_ip));
@@ -243,19 +239,16 @@ fn token_error(rejected: &TokenResult) -> String {
     }
 }
 
-/// `HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)`, where `ip16` is the address as
+/// `HMAC-SHA256(key, ip16 ‖ uuid16)`, where `ip16` is the address as
 /// IPv6 (IPv4 as IPv4-mapped `::ffff:a.b.c.d`, as in the v2 token) and
-/// `uuid16` the 16 bytes of the open test UUID from the token.
-///
-/// The fields are concatenated, not XORed: with XOR a client could choose a
-/// salt that makes one valid signature fit any other IP and test.
-fn ip_signature(key: &[u8], salt: &[u8; 16], ip: IpAddr, open_test_uuid: &[u8; 16]) -> [u8; 32] {
+/// `uuid16` the 16 bytes of the open test UUID from the token.  No salt is
+/// needed: the open test UUID is random and unique per test.
+fn ip_signature(key: &[u8], ip: IpAddr, open_test_uuid: &[u8; 16]) -> [u8; 32] {
     let ip16 = match ip {
         IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
         IpAddr::V6(v6) => v6.octets(),
     };
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(salt);
     mac.update(&ip16);
     mac.update(open_test_uuid);
     mac.finalize().into_bytes().into()
@@ -315,7 +308,6 @@ mod tests {
     use crate::protocol::token::make_test_token;
 
     const KEY: &[u8] = b"testkey12345";
-    const SALT: [u8; 16] = [7; 16];
     const UUID: &str = "f71d53f4-c67c-4b99-b319-979f714cd408";
 
     fn now() -> i64 {
@@ -340,7 +332,7 @@ mod tests {
     fn answer(fields: &str, public: &str) -> Result<IpAnswer, IpError> {
         let sep = if fields.is_empty() { "" } else { "," };
         let body = format!(r#"{{"token":"{}"{sep}{fields}}}"#, token_b(public));
-        ip_response(body.as_bytes(), public.parse().unwrap(), &keys(), 1, SALT)
+        ip_response(body.as_bytes(), public.parse().unwrap(), &keys(), 1)
     }
 
     fn json(fields: &str, public: &str) -> String {
@@ -348,7 +340,7 @@ mod tests {
     }
 
     fn status(body: &str) -> &'static str {
-        match ip_response(body.as_bytes(), "203.0.113.1".parse().unwrap(), &keys(), 1, SALT) {
+        match ip_response(body.as_bytes(), "203.0.113.1".parse().unwrap(), &keys(), 1) {
             Ok(_) => "200",
             Err((status, _)) => &status[..3],
         }
@@ -418,12 +410,12 @@ mod tests {
         let a = answer(r#""test_uuid":"ignored""#, "203.0.113.1").ok().unwrap();
         assert!(a.note.contains("key 'control-b'"), "{}", a.note);
         assert!(!a.json.contains("is_proxy"));
-        assert!(a.json.contains(r#""salt":"BwcHBwcHBwcHBwcHBwcHBw==""#));
+        assert!(!a.json.contains("salt"));
 
         let uuid = parse_uuid(UUID).unwrap();
         let ip = "203.0.113.1".parse().unwrap();
-        let sig_b = B64.encode(ip_signature(b"control-b-secret", &SALT, ip, &uuid));
-        let sig_a = B64.encode(ip_signature(b"control-a-secret", &SALT, ip, &uuid));
+        let sig_b = B64.encode(ip_signature(b"control-b-secret", ip, &uuid));
+        let sig_a = B64.encode(ip_signature(b"control-a-secret", ip, &uuid));
         assert!(a.json.contains(&format!(r#""signature":"{sig_b}""#)));
         assert!(!a.json.contains(&sig_a));
     }
@@ -435,7 +427,7 @@ mod tests {
 
         // Control server saw IPv4, this server sees IPv6: still signed, matching_ip false.
         let body = format!(r#"{{"token":"{}"}}"#, token_b("203.0.113.1"));
-        let other = ip_response(body.as_bytes(), "2001:db8::7".parse().unwrap(), &keys(), 1, SALT).ok().unwrap();
+        let other = ip_response(body.as_bytes(), "2001:db8::7".parse().unwrap(), &keys(), 1).ok().unwrap();
         assert!(other.json.contains(r#""ip":"2001:db8::7""#));
         assert!(other.json.contains(r#""matching_ip":false"#));
         assert!(other.json.contains(r#""signature":"#));
@@ -445,9 +437,9 @@ mod tests {
     fn unchecked_without_keys() {
         // --no-token-check: token still required, but neither checked nor used to sign.
         let ip = "203.0.113.1".parse().unwrap();
-        let none = ip_response(br#"{"token":"anything"}"#, ip, &[], 1, SALT).ok().unwrap();
+        let none = ip_response(br#"{"token":"anything"}"#, ip, &[], 1).ok().unwrap();
         assert_eq!(none.json, r#"{"v":"4","ip":"203.0.113.1","nat_type":"is_ipv4"}"#);
-        assert!(ip_response(b"{}", ip, &[], 1, SALT).is_err());
+        assert!(ip_response(b"{}", ip, &[], 1).is_err());
     }
 
     #[test]
@@ -473,17 +465,16 @@ mod tests {
     fn signature_binds_ip_and_uuid() {
         let uuid = parse_uuid(UUID).unwrap();
         let v4: IpAddr = "203.0.113.1".parse().unwrap();
-        let sig = ip_signature(KEY, &SALT, v4, &uuid);
+        let sig = ip_signature(KEY, v4, &uuid);
         // Reference value, cross-checked with the Java verifier in ip-signature.md.
-        assert_eq!(B64.encode(sig), "rHe5w73IaBy+Yae/MiewbcqDdJzFZnMaizqbKZLQRj4=");
+        assert_eq!(B64.encode(sig), "HVDXiyb2awlRvPhVIx5y/ERz113y0rnCMCHyU2ktAcA=");
         // IPv4 and its mapped form sign identically.
-        assert_eq!(sig, ip_signature(KEY, &SALT, "::ffff:203.0.113.1".parse().unwrap(), &uuid));
-        // Any change of IP, UUID, salt or key changes the signature.
-        assert_ne!(sig, ip_signature(KEY, &SALT, "203.0.113.2".parse().unwrap(), &uuid));
+        assert_eq!(sig, ip_signature(KEY, "::ffff:203.0.113.1".parse().unwrap(), &uuid));
+        // Any change of IP, UUID or key changes the signature.
+        assert_ne!(sig, ip_signature(KEY, "203.0.113.2".parse().unwrap(), &uuid));
         let mut other = uuid;
         other[0] ^= 1;
-        assert_ne!(sig, ip_signature(KEY, &SALT, v4, &other));
-        assert_ne!(sig, ip_signature(KEY, &[8; 16], v4, &uuid));
-        assert_ne!(sig, ip_signature(b"otherkey", &SALT, v4, &uuid));
+        assert_ne!(sig, ip_signature(KEY, v4, &other));
+        assert_ne!(sig, ip_signature(b"otherkey", v4, &uuid));
     }
 }

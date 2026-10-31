@@ -37,8 +37,6 @@ base64 = "0.22"
 # JSON request parsing for the /ip endpoint.
 serde_json = "1"
 
-# OS random source for the /ip signature salt.
-getrandom = "0.3"
 
 # Logging framework (structured, level-filtered).
 log        = "0.4"
