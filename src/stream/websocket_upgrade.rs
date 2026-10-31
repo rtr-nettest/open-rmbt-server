@@ -7,7 +7,7 @@ use log::debug;
 use super::{Stream, Transport};
 use crate::config::SecretKey;
 use crate::config::constants::HSTS_HEADER;
-use crate::ip_check;
+use crate::{ip_check, version};
 
 // RFC 6455 §1.3 magic suffix appended to Sec-WebSocket-Key before SHA-1.
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -18,6 +18,8 @@ pub enum Upgrade {
     Rmbt(Stream),
     /// A plain HTTP request to `/ip` was answered; carries a log summary.
     IpCheck(String),
+    /// A plain HTTP request to `/version` was answered; carries a log summary.
+    Version(String),
 }
 
 /// Detect the HTTP upgrade type, complete the handshake, and return a `Stream`.
@@ -25,7 +27,7 @@ pub enum Upgrade {
 /// Called for every new connection when the server operates in HTTP/WebSocket
 /// mode (always, matching the C reference's `-w` behaviour which is now the
 /// default).  Requests to `/ip` (any method) are answered by the IP check
-/// instead.
+/// instead, and requests to `/version` by the version endpoint.
 ///
 /// `add_hsts` appends a `Strict-Transport-Security` header to the HTTP
 /// responses; the caller sets it only for TLS connections when HSTS is enabled.
@@ -60,6 +62,11 @@ pub fn detect_and_upgrade(
         let summary = ip_check::handle(&mut transport, &req, hsts, keys, conn_id)?;
         transport.close();
         return Ok(Upgrade::IpCheck(summary));
+    }
+    if version::matches(req.split(' ').nth(1).unwrap_or("")) {
+        let summary = version::handle(&mut transport, &req, hsts)?;
+        transport.close();
+        return Ok(Upgrade::Version(summary));
     }
 
     if !req.starts_with("GET ") {

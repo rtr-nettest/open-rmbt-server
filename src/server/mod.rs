@@ -327,6 +327,10 @@ fn handle_connection(
                 info!("[conn {}] ip check {}", conn_id, summary);
                 break 'session "ip_check";
             }
+            Ok(Upgrade::Version(summary)) => {
+                info!("[conn {}] version {}", conn_id, summary);
+                break 'session "version";
+            }
             // A client that opens a socket (commonly a browser preconnect or a
             // spare connection), completes TLS, then closes before sending the
             // HTTP upgrade request is routine, not a protocol error — log it at

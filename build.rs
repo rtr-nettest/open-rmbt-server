@@ -14,30 +14,51 @@
 //
 // A single leading `v` is stripped (tags are `v1.7.0`) so the greeting reads
 // `RMBTv1.7.0`, not `RMBTvv1.7.0`.
+//
+// The git branch (for `/version`) is resolved the same way: `RMBTD_BRANCH`
+// env var, then `git rev-parse --abbrev-ref HEAD`, else empty (e.g. detached
+// HEAD or no `.git`).
 
 use std::process::Command;
 
 fn main() {
-    let version = env_override()
+    let version = env_override("RMBTD_VERSION")
         .or_else(git_describe)
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
 
     let version = version.strip_prefix('v').unwrap_or(&version);
 
-    println!("cargo:rustc-env=RMBTD_VERSION={version}");
+    let branch = env_override("RMBTD_BRANCH").or_else(git_branch).unwrap_or_default();
 
-    // Rebuild when the tag or the override changes.
+    println!("cargo:rustc-env=RMBTD_VERSION={version}");
+    println!("cargo:rustc-env=RMBTD_BRANCH={branch}");
+
+    // Rebuild when the tag, the branch or an override changes.
     println!("cargo:rerun-if-env-changed=RMBTD_VERSION");
+    println!("cargo:rerun-if-env-changed=RMBTD_BRANCH");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/tags");
 }
 
-/// An explicit `RMBTD_VERSION` set in the build environment, if non-empty.
-fn env_override() -> Option<String> {
-    std::env::var("RMBTD_VERSION")
+/// An explicit value for `name` set in the build environment, if non-empty.
+fn env_override(name: &str) -> Option<String> {
+    std::env::var(name)
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+/// The current git branch, if git is present and HEAD is not detached.
+fn git_branch() -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let b = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (!b.is_empty() && b != "HEAD").then_some(b)
 }
 
 /// The nearest git tag via `git describe --tags`, if git and a tag are present.

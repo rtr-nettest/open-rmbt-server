@@ -91,6 +91,22 @@ the format and control-server verification.
 
 CORS preflight (`OPTIONS`) is answered, so browsers can call it cross-origin.
 
+Version
+-------
+
+`GET /version` returns the build version as JSON, modelled on
+`GET /RMBTControlServer/version` of the control server (version only):
+
+```sh
+curl https://<host>/version
+{"version":"v1.9.0-1-g0601658(dev)"}
+```
+
+The value is `v<version>(<branch>)`: the version as in the greeting (`RMBTv…`) and
+`rmbtd --version`, plus the git branch it was built from. Both are taken at build time;
+`RMBTD_VERSION` and `RMBTD_BRANCH` in the build environment override them. Without a known
+branch (detached HEAD, no `.git`) the `(<branch>)` part is omitted. Other methods get 405.
+
 Remote event logging (ELK)
 --------------------------
 
@@ -109,7 +125,7 @@ Events (each carries a `conn` id for correlation):
 * `close` — the outcome at end of connection: `duration_ms`, server-measured download
   (`dl_bytes`/`dl_mbps`), upload (`ul_bytes`/`ul_mbps`) and ping (`ping_count`/`ping_min_ms`/`ping_max_ms`),
   the command count, and `end` (`quit` / `disconnect` / `error` / `auth_failed` /
-  `upgrade_failed` / `ip_check` / …). The `uuid`, `token` type and `secret` label are repeated for
+  `upgrade_failed` / `ip_check` / `version` / …). The `uuid`, `token` type and `secret` label are repeated for
   correlation.
 
 By default the source IP is anonymised (last octet/group dropped), matching the local-log
