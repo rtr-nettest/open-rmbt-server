@@ -5,6 +5,7 @@ use tungstenite::WebSocket;
 use log::debug;
 
 use super::{Stream, Transport};
+use crate::config::SecretKey;
 use crate::config::constants::HSTS_HEADER;
 use crate::ip_check;
 
@@ -28,7 +29,12 @@ pub enum Upgrade {
 ///
 /// `add_hsts` appends a `Strict-Transport-Security` header to the HTTP
 /// responses; the caller sets it only for TLS connections when HSTS is enabled.
-pub fn detect_and_upgrade(mut transport: Transport, add_hsts: bool) -> io::Result<Upgrade> {
+/// `keys` are the loaded secret keys; the first one signs `/ip` answers.
+pub fn detect_and_upgrade(
+    mut transport: Transport,
+    add_hsts: bool,
+    keys: &[SecretKey],
+) -> io::Result<Upgrade> {
     // HSTS header line to include on responses (empty when disabled).
     let hsts = if add_hsts { HSTS_HEADER } else { "" };
 
@@ -49,7 +55,8 @@ pub fn detect_and_upgrade(mut transport: Transport, add_hsts: bool) -> io::Resul
     let req = String::from_utf8_lossy(&buf);
 
     if ip_check::matches(req.split(' ').nth(1).unwrap_or("")) {
-        let summary = ip_check::handle(&mut transport, &req, hsts)?;
+        let key = keys.first().map(|k| k.key.as_bytes());
+        let summary = ip_check::handle(&mut transport, &req, hsts, key)?;
         transport.close();
         return Ok(Upgrade::IpCheck(summary));
     }

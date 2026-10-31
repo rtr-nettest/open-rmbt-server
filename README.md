@@ -62,18 +62,29 @@ ADDRESS examples: "443", "0.0.0.0:443", "[::]:443"
 IP check
 --------
 
-`POST /ip` reports the client's address as seen by this server, mirroring
-`POST /RMBTControlServer/ip` of the control server (same request and response format):
+`POST /ip` reports the client's address as seen by this server, modelled on
+`POST /RMBTControlServer/ip` of the control server:
 
 ```sh
-curl -X POST -H 'Content-Type: application/json' -d '{"client_ip_local":"192.168.1.5"}' https://<host>/ip
-{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","is_proxy":false}
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"client_ip_local":"192.168.1.5","open_test_uuid":"Of71d53f4-c67c-4b99-b319-979f714cd408"}' https://<host>/ip
+{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","salt":"D1Hfsm/7IujFU3vlYfh1Tw==","signature":"ABsF…enc="}
 ```
 
-`client_ip_local` is optional and only used to derive `nat_type`. Unlike the control
-server, `test_uuid` is ignored (no test database) and `is_proxy` is always `false`
-(no VPN detection). CORS preflight (`OPTIONS`) is answered, so browsers can call it
-cross-origin.
+The reported `ip` is always the address of the TCP connection; it cannot be set by the
+client. `client_ip_local` is optional and only used to derive `nat_type`. Other request
+fields (e.g. `test_uuid`) are ignored. There is no `is_proxy` field: this server does no
+VPN/proxy detection.
+
+If the request carries an `open_test_uuid` (as returned by `/testRequest`, with or
+without the leading `O`), the answer is signed with the first key of the secret key file,
+so that the control server can verify the address:
+`signature = HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)`, base64, with a random 16-byte `salt`.
+Without `open_test_uuid`, or with `--no-token-check` (no keys loaded), the answer is
+unsigned. See [ip-signature.md](ip-signature.md) for the format and control-server
+verification.
+
+CORS preflight (`OPTIONS`) is answered, so browsers can call it cross-origin.
 
 Remote event logging (ELK)
 --------------------------

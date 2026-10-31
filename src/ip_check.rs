@@ -1,8 +1,13 @@
 use std::io::{self, Read, Write};
 use std::net::IpAddr;
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::Value;
+use sha2::Sha256;
 
 use crate::stream::Transport;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Upper bound for the request body; real requests are a few hundred bytes.
 const MAX_BODY: u64 = 8192;
@@ -20,13 +25,14 @@ pub fn matches(target: &str) -> bool {
 /// control server: the client's address as seen by this server, its IP
 /// version and the NAT type derived from the optional `client_ip_local`.
 ///
+/// If the request carries an `open_test_uuid` and a signing `key` is available
+/// (the first key of the secret key file), the response is signed so that the
+/// control server can verify the address; see `ip-signature.md`.  Unknown
+/// request fields (e.g. `test_uuid`) are ignored.
+///
 /// `head` is the already-read request header block; `hsts` the HSTS header
 /// line to add (empty when disabled).  Returns a short summary for logging.
-///
-/// The control server additionally stores the NAT type for a running test
-/// (`test_uuid`) and detects VPN/proxy usage; neither is available here, so
-/// `test_uuid` is ignored and `is_proxy` is always false.
-pub fn handle(client: &mut Transport, head: &str, hsts: &str) -> io::Result<String> {
+pub fn handle(client: &mut Transport, head: &str, hsts: &str, key: Option<&[u8]>) -> io::Result<String> {
     let mut lines = head.split("\r\n");
     let method = lines.next().unwrap_or("").split(' ').next().unwrap_or("");
 
@@ -54,6 +60,8 @@ pub fn handle(client: &mut Transport, head: &str, hsts: &str) -> io::Result<Stri
     // Browsers (e.g. the web client) call /ip cross-origin.
     let cors = if origin { "Access-Control-Allow-Origin: *\r\n" } else { "" };
 
+    // Detail for the log line, e.g. "is_ipv4, signed".
+    let mut note = None;
     let (status, extra, body) = match method {
         "OPTIONS" => {
             let extra = format!(
@@ -84,8 +92,14 @@ pub fn handle(client: &mut Transport, head: &str, hsts: &str) -> io::Result<Stri
                 ("415 Unsupported Media Type", "Accept: application/json\r\n".into(),
                  error_body("Content-Type must be application/json"))
             } else {
-                match ip_response(&buf, public) {
-                    Ok(json) => ("200 OK", String::new(), json),
+                let mut salt = [0u8; 16];
+                getrandom::fill(&mut salt).map_err(io::Error::other)?;
+                match ip_response(&buf, public, key.map(|k| (k, salt))) {
+                    Ok(answer) => {
+                        let signed = if answer.signed { ", signed" } else { "" };
+                        note = Some(format!("{}{signed}", answer.nat_type));
+                        ("200 OK", String::new(), answer.json)
+                    }
                     Err(msg) => ("400 Bad Request", String::new(), error_body(&msg)),
                 }
             }
@@ -108,9 +122,9 @@ pub fn handle(client: &mut Transport, head: &str, hsts: &str) -> io::Result<Stri
     client.flush()?;
 
     let code = &status[..3];
-    Ok(match body.split("\"nat_type\":\"").nth(1).and_then(|r| r.split('"').next()) {
-        Some(nat) => format!("{method} /ip -> {code} ({nat})"),
-        None      => format!("{method} /ip -> {code}"),
+    Ok(match note {
+        Some(note) => format!("{method} /ip -> {code} ({note})"),
+        None       => format!("{method} /ip -> {code}"),
     })
 }
 
@@ -126,9 +140,18 @@ fn error_body(msg: &str) -> String {
     serde_json::json!({ "error": [msg] }).to_string()
 }
 
-/// Build the JSON response for request `body` from a client at `public`, or an
-/// error message for a 400 response.
-fn ip_response(body: &[u8], public: IpAddr) -> Result<String, String> {
+/// A successful `/ip` answer.
+struct IpAnswer {
+    json:     String,
+    nat_type: String,
+    signed:   bool,
+}
+
+/// Build the answer for request `body` from a client at `public`, or an error
+/// message for a 400 response.  `signer` is the signing key and the salt to
+/// use; the answer is signed only if it is given and the request carries an
+/// `open_test_uuid`.
+fn ip_response(body: &[u8], public: IpAddr, signer: Option<(&[u8], [u8; 16])>) -> Result<IpAnswer, String> {
     if body.is_empty() {
         return Err("Required request body is missing".into());
     }
@@ -150,13 +173,71 @@ fn ip_response(body: &[u8], public: IpAddr) -> Result<String, String> {
         .map(|s| s.parse::<IpAddr>().map(|ip| ip.to_canonical()))
         .transpose()
         .map_err(|_| "client_ip_local must be valid IP address".to_string())?;
-    let public = public.to_canonical();
 
+    let open_test_uuid = match obj.get("open_test_uuid") {
+        None | Some(Value::Null)                     => None,
+        Some(Value::String(s)) if s.trim().is_empty() => None,
+        Some(Value::String(s)) => Some(parse_open_test_uuid(s).ok_or("open_test_uuid must be a valid UUID")?),
+        Some(_) => return Err("Invalid request format: open_test_uuid must be a string".into()),
+    };
+
+    let public = public.to_canonical();
+    let nat_type = nat_type(local, public);
     let v = if public.is_ipv4() { "4" } else { "6" };
-    Ok(format!(
-        r#"{{"v":"{v}","ip":"{public}","nat_type":"{}","is_proxy":false}}"#,
-        nat_type(local, public),
-    ))
+    let mut json = format!(r#"{{"v":"{v}","ip":"{public}","nat_type":"{nat_type}""#);
+
+    let signed = match (open_test_uuid, signer) {
+        (Some(uuid), Some((key, salt))) => {
+            let signature = ip_signature(key, &salt, public, &uuid);
+            json.push_str(&format!(
+                r#","salt":"{}","signature":"{}""#,
+                B64.encode(salt),
+                B64.encode(signature),
+            ));
+            true
+        }
+        _ => false,
+    };
+    json.push('}');
+
+    Ok(IpAnswer { json, nat_type, signed })
+}
+
+/// `HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)`, where `ip16` is the address as
+/// IPv6 (IPv4 as IPv4-mapped `::ffff:a.b.c.d`, as in the v2 token) and
+/// `uuid16` the 16 bytes of the open test UUID (without the "O" prefix).
+///
+/// The fields are concatenated, not XORed: with XOR a client could choose a
+/// salt that makes one valid signature fit any other IP and test.
+fn ip_signature(key: &[u8], salt: &[u8; 16], ip: IpAddr, open_test_uuid: &[u8; 16]) -> [u8; 32] {
+    let ip16 = match ip {
+        IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+        IpAddr::V6(v6) => v6.octets(),
+    };
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(salt);
+    mac.update(&ip16);
+    mac.update(open_test_uuid);
+    mac.finalize().into_bytes().into()
+}
+
+/// Parse an open test UUID in canonical form (`8-4-4-4-12` hex digits), with
+/// or without the "O" prefix the control server adds, into its 16 bytes.
+fn parse_open_test_uuid(s: &str) -> Option<[u8; 16]> {
+    let s = s.strip_prefix('O').unwrap_or(s);
+    let b = s.as_bytes();
+    if b.len() != 36 || [8, 13, 18, 23].iter().any(|&i| b[i] != b'-') {
+        return None;
+    }
+    let hex: Vec<u8> = b.iter().copied().filter(|&c| c != b'-').collect();
+    if hex.len() != 32 || !hex.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, pair) in hex.chunks(2).enumerate() {
+        out[i] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
 }
 
 /// NAT classification, identical to the control server's
@@ -193,8 +274,12 @@ fn is_ip_local(ip: &IpAddr) -> bool {
 mod tests {
     use super::*;
 
-    fn resp(body: &str, public: &str) -> Result<String, String> {
-        ip_response(body.as_bytes(), public.parse().unwrap())
+    const KEY: &[u8] = b"testkey12345";
+    const SALT: [u8; 16] = [7; 16];
+    const UUID: &str = "f71d53f4-c67c-4b99-b319-979f714cd408";
+
+    fn json(body: &str, public: &str) -> Result<String, String> {
+        ip_response(body.as_bytes(), public.parse().unwrap(), Some((KEY, SALT))).map(|a| a.json)
     }
 
     #[test]
@@ -210,8 +295,8 @@ mod tests {
     fn nat_types_match_control_server() {
         // Expected values taken from c01.netztest.at for the same inputs.
         let p = "213.47.60.109";
-        let nat = |body: &str| resp(body, p).unwrap();
-        assert_eq!(nat("{}"), r#"{"v":"4","ip":"213.47.60.109","nat_type":"is_ipv4","is_proxy":false}"#);
+        let nat = |body: &str| json(body, p).unwrap();
+        assert_eq!(nat("{}"), r#"{"v":"4","ip":"213.47.60.109","nat_type":"is_ipv4"}"#);
         assert!(nat(r#"{"client_ip_local":"192.168.1.5"}"#).contains(r#""nat_type":"nat_local_to_public_ipv4""#));
         assert!(nat(r#"{"client_ip_local":"213.47.60.109"}"#).contains(r#""nat_type":"no_nat_ipv4""#));
         assert!(nat(r#"{"client_ip_local":"::ffff:213.47.60.109"}"#).contains(r#""nat_type":"no_nat_ipv4""#));
@@ -222,24 +307,26 @@ mod tests {
 
     #[test]
     fn ipv6_and_mapped_clients() {
-        let r = resp(r#"{"client_ip_local":"2001:db8::1"}"#, "2001:db8::1").unwrap();
-        assert_eq!(r, r#"{"v":"6","ip":"2001:db8::1","nat_type":"no_nat_ipv6","is_proxy":false}"#);
+        let r = json(r#"{"client_ip_local":"2001:db8::1"}"#, "2001:db8::1").unwrap();
+        assert_eq!(r, r#"{"v":"6","ip":"2001:db8::1","nat_type":"no_nat_ipv6"}"#);
         // Dual-stack listener: IPv4 client shows up as ::ffff:a.b.c.d.
-        let r = resp("{}", "::ffff:198.51.100.7").unwrap();
-        assert_eq!(r, r#"{"v":"4","ip":"198.51.100.7","nat_type":"is_ipv4","is_proxy":false}"#);
-        assert!(resp(r#"{"client_ip_local":"10.0.0.2"}"#, "10.0.0.1").unwrap()
+        let r = json("{}", "::ffff:198.51.100.7").unwrap();
+        assert_eq!(r, r#"{"v":"4","ip":"198.51.100.7","nat_type":"is_ipv4"}"#);
+        assert!(json(r#"{"client_ip_local":"10.0.0.2"}"#, "10.0.0.1").unwrap()
             .contains(r#""nat_type":"nat_local_to_local_ipv4""#));
     }
 
     #[test]
     fn rejects_bad_requests() {
         let p = "203.0.113.1";
-        assert!(resp("", p).is_err());
-        assert!(resp("{x", p).is_err());
-        assert!(resp("[]", p).is_err());
-        assert!(resp(r#"{"client_ip_local":"nope"}"#, p).is_err());
-        assert!(resp(r#"{"client_ip_local":5}"#, p).is_err());
-        assert!(resp(r#"{"client_ip_local":{}}"#, p).is_err());
+        assert!(json("", p).is_err());
+        assert!(json("{x", p).is_err());
+        assert!(json("[]", p).is_err());
+        assert!(json(r#"{"client_ip_local":"nope"}"#, p).is_err());
+        assert!(json(r#"{"client_ip_local":5}"#, p).is_err());
+        assert!(json(r#"{"client_ip_local":{}}"#, p).is_err());
+        assert!(json(r#"{"open_test_uuid":"nope"}"#, p).is_err());
+        assert!(json(r#"{"open_test_uuid":5}"#, p).is_err());
     }
 
     #[test]
@@ -248,5 +335,49 @@ mod tests {
         assert!(is_json("Application/JSON; charset=utf-8"));
         assert!(!is_json("text/plain"));
         assert!(!is_json(""));
+    }
+
+    #[test]
+    fn parses_open_test_uuid() {
+        let bytes = parse_open_test_uuid(UUID).unwrap();
+        assert_eq!(bytes[..4], [0xf7, 0x1d, 0x53, 0xf4]);
+        assert_eq!(bytes[15], 0x08);
+        assert_eq!(parse_open_test_uuid(&format!("O{UUID}")), Some(bytes));
+        assert_eq!(parse_open_test_uuid(&UUID.to_uppercase()), Some(bytes));
+        assert!(parse_open_test_uuid("Of71d53f4c67c4b99b319979f714cd408").is_none());
+        assert!(parse_open_test_uuid("+71d53f4-c67c-4b99-b319-979f714cd408").is_none());
+        assert!(parse_open_test_uuid("OO71d53f4-c67c-4b99-b319-979f714cd408").is_none());
+    }
+
+    #[test]
+    fn signs_only_with_open_test_uuid_and_key() {
+        let p = "203.0.113.1".parse().unwrap();
+        let with_uuid = format!(r#"{{"open_test_uuid":"O{UUID}","test_uuid":"ignored"}}"#);
+
+        let a = ip_response(with_uuid.as_bytes(), p, Some((KEY, SALT))).unwrap();
+        assert!(a.signed);
+        assert!(a.json.contains(r#""salt":"BwcHBwcHBwcHBwcHBwcHBw==""#));
+        assert!(!a.json.contains("is_proxy"));
+
+        assert!(!ip_response(b"{}", p, Some((KEY, SALT))).unwrap().signed);
+        assert!(!ip_response(with_uuid.as_bytes(), p, None).unwrap().signed);
+    }
+
+    #[test]
+    fn signature_binds_ip_and_uuid() {
+        let uuid = parse_open_test_uuid(UUID).unwrap();
+        let v4: IpAddr = "203.0.113.1".parse().unwrap();
+        let sig = ip_signature(KEY, &SALT, v4, &uuid);
+        // Reference value, cross-checked with the Java verifier in ip-signature.md.
+        assert_eq!(B64.encode(sig), "rHe5w73IaBy+Yae/MiewbcqDdJzFZnMaizqbKZLQRj4=");
+        // IPv4 and its mapped form sign identically.
+        assert_eq!(sig, ip_signature(KEY, &SALT, "::ffff:203.0.113.1".parse().unwrap(), &uuid));
+        // Any change of IP, UUID, salt or key changes the signature.
+        assert_ne!(sig, ip_signature(KEY, &SALT, "203.0.113.2".parse().unwrap(), &uuid));
+        let mut other = uuid;
+        other[0] ^= 1;
+        assert_ne!(sig, ip_signature(KEY, &SALT, v4, &other));
+        assert_ne!(sig, ip_signature(KEY, &[8; 16], v4, &uuid));
+        assert_ne!(sig, ip_signature(b"otherkey", &SALT, v4, &uuid));
     }
 }
