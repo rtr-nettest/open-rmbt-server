@@ -1,9 +1,9 @@
 # Signed IP check
 
 A measurement server (rmbtd) answers `POST /ip` with the client's address as seen on the
-TCP connection. When the client sends the `open_test_uuid` of its running test, the answer is
-signed with the measurement server's secret. The control server can then trust that address
-for that test, and only for that test.
+TCP connection. The client sends the test token of its running test, and the answer is signed
+with the key of the control server that issued that token. That control server can then trust
+the address for that test, and only for that test.
 
 ## Measurement server: request and response
 
@@ -11,25 +11,45 @@ for that test, and only for that test.
 POST /ip HTTP/1.1
 Content-Type: application/json
 
-{"open_test_uuid":"Of71d53f4-c67c-4b99-b319-979f714cd408","client_ip_local":"192.168.1.5"}
+{"token":"f71d53f4-c67c-4b99-b319-979f714cd408_1761903363_q3m…=_#v2#ZQRW…==","client_ip_local":"192.168.1.5"}
 ```
 
 ```json
-{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4",
- "salt":"D1Hfsm/7IujFU3vlYfh1Tw==","signature":"ABsFHoSDUbkAHIbSZ8HJ+ZdsfCZ2vtppoVCCDuhOenc="}
+{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","matching_ip":true,
+ "salt":"Na6vDcFHJuoGXea5/f2OYg==","signature":"SA3oklIWn44mKpliDzkt00loUhAZbksRo/7asy995bM="}
 ```
 
 | Field | Meaning |
 |---|---|
-| `open_test_uuid` (request) | From `/testRequest`. Accepted with or without the leading `O`. Optional; without it the answer is unsigned. An invalid value gives 400. |
+| `token` (request) | **Mandatory.** The `test_token` from `/testRequest`, unchanged, as used for the speed test: `<open_test_uuid>_<test_slot>_<HMAC-SHA1>` optionally followed by `_#v2#<base64>`. Missing or blank: 400. |
 | `client_ip_local` (request) | Optional; only used for `nat_type`. Not signed, because the client supplies it. |
-| other request fields | Ignored (e.g. `test_uuid`, `client_uuid`). |
+| other request fields | Ignored (e.g. `test_uuid`, `client_uuid`, the former `open_test_uuid`). |
 | `ip` | The TCP peer address in canonical text form. IPv4 that reaches a dual-stack listener as `::ffff:a.b.c.d` is reported as IPv4. The client cannot set it. |
+| `matching_ip` | `true` if the v2 part of the token is valid for `ip` (checked with the key that validated v1), i.e. the control server issued the token for the address this server sees. `false` if it differs (typically the other address family, or behind a different NAT) or if there is no or a broken v2 part. |
 | `salt` | 16 random bytes (OS RNG), base64; new for every answer. |
 | `signature` | 32 bytes, base64 (see below). |
 
-There is no `is_proxy` field, because this server does no VPN or proxy detection. If no key is
-loaded (`--no-token-check`), the answer is unsigned.
+There is no `is_proxy` field, because this server does no VPN or proxy detection.
+
+### Token check
+
+The server checks the token exactly as the speed test does, with one difference: it never waits.
+
+1. **v1 must be valid.** `HMAC-SHA1(key, "<uuid>_<slot>")` must match for one of the keys in
+   `secret.key`, and `slot` must lie in the speed test's window (at most 20 s early, at most
+   90 s late). Otherwise the request is refused with **403**: invalid HMAC, malformed, too early
+   or expired.
+2. **The v1 match identifies the key.** Each control server has its own key for this
+   measurement server. The key that validates v1 belongs to the control server that issued the
+   token, and **that key signs the answer**. Its position in `secret.key` doesn't matter.
+3. **v2 is informational.** It is checked only with that same key and only sets `matching_ip`; it
+   never causes a rejection.
+
+With `--no-token-check` (no keys loaded) the token is still required but not checked, and the
+answer has neither `matching_ip` nor `salt`/`signature`.
+
+Consequence of the time window: the client has to call `/ip` within 20 s before to 90 s after
+the test slot, for example right before or alongside the speed test.
 
 ## Signature
 
@@ -37,14 +57,17 @@ loaded (`--no-token-check`), the answer is unsigned.
 signature = HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)          48 bytes of input, 32 bytes out
 ```
 
-- `key`: the measurement server's secret as UTF-8 bytes, i.e. the **first** key in
-  `secret.key`. It must be the key stored in the control server's `test_server.key` for this
-  server. Token validation accepts any listed key; signing always uses the first one.
+- `key`: the key that validated the token's v1 part, as UTF-8 bytes. This is the control
+  server's `test_server.key` for this measurement server.
 - `salt`: the 16 bytes from the answer.
 - `ip16`: the address as 16 bytes. IPv6 as-is; IPv4 as IPv4-mapped IPv6 `::ffff:a.b.c.d`, the
   same mapping as `RmbtUdpTokenFactory.toMappedIpv6Bytes`.
-- `uuid16`: the open test UUID as 16 bytes, big-endian (Java: most-significant `long`, then
-  least-significant `long`). The `O` prefix is **not** signed.
+- `uuid16`: the open test UUID at the start of the token, as 16 bytes, big-endian (Java:
+  most-significant `long`, then least-significant `long`). The token contains it without the
+  `O` prefix, and the `O` is not signed.
+
+`matching_ip` is not signed. The control server doesn't need it, because it can compare the signed
+`ip` with the address it issued the token for (`test.client_public_ip`).
 
 Test vector, computed independently by the Rust implementation and by the Java verifier below:
 
@@ -72,8 +95,9 @@ it does no harm either.
 ## Control server: verifier (Java)
 
 Drop-in for `at.rtr.rmbt.utils`, next to `RmbtUdpTokenFactory`. This exact code was compiled
-and run against live answers from rmbtd over IPv4 and IPv6: valid signatures verify, and a
-change of UUID, IP, key or salt is rejected.
+and run against live answers from rmbtd over IPv4 and IPv6, with tokens built the way
+`TestSettingsFacade` builds them, by two "control servers" with different keys. Signatures
+verify with the issuing key only, and a change of UUID or IP is rejected.
 
 ```java
 package at.rtr.rmbt.utils;
@@ -91,7 +115,7 @@ import java.util.UUID;
 
 /**
  * Verifies the signature a measurement server (rmbtd) adds to its {@code POST /ip} answer
- * when the client sends its {@code open_test_uuid}:
+ * for a request carrying a valid test token:
  *
  * <pre>
  *   signature = HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)
@@ -182,26 +206,28 @@ void verifiesReferenceVector() {
 
 1. **`POST /testRequest`** (`TestSettingsFacade`) creates the `Test` row with status `STARTED`,
    a random `uuid` and `open_test_uuid`, and the assigned `test_server` (`Test.testServer`,
-   `server_id`). It returns `test_uuid`, `open_test_uuid` (as `"O" + uuid`) and the test token,
-   which is signed with `testServer.getKey()`.
-2. The client runs the measurement against that server.
+   `server_id`). It returns `test_uuid`, `open_test_uuid` (as `"O" + uuid`) and the test token:
+   `<open_test_uuid>_<test_slot>_<HMAC-SHA1>_#v2#<…>`, signed with `testServer.getKey()`, the v2
+   part bound to the client address this control server saw.
+2. The client runs the measurement against that server, using the token.
 3. **`POST /result`** (`ResultServiceImpl.processResultRequest`) locks the row
    (`findAndLockByUuidOrOpenTestUuid`), requires status `STARTED`, stores the result and sets
    the status to `FINISHED` (or an error status) in the same transaction.
 
 ### New step in between
 
-Between 1 and 3, the client calls `/ip` on the **assigned** measurement server, once per address
-family, through its existing per-family host names (`test_server.web_address_ipv4` /
-`web_address_ipv6`, e.g. `vie3-httpv4.netztest.at`):
+Between 1 and 3, within the token's time window, the client calls `/ip` on the **assigned**
+measurement server, once per address family, through its existing per-family host names
+(`test_server.web_address_ipv4` / `web_address_ipv6`, e.g. `vie3-httpv4.netztest.at`). It sends
+the same token it uses for the speed test:
 
 ```
-POST https://{web_address_ipv4}/ip   {"open_test_uuid":"O…"}   → signed IPv4 answer
-POST https://{web_address_ipv6}/ip   {"open_test_uuid":"O…"}   → signed IPv6 answer (if the client has IPv6)
+POST https://{web_address_ipv4}/ip   {"token":"<test_token>"}   → signed IPv4 answer
+POST https://{web_address_ipv6}/ip   {"token":"<test_token>"}   → signed IPv6 answer (if the client has IPv6)
 ```
 
-This can run in parallel with the measurement, since it is two small HTTPS requests. A failed
-call (e.g. no IPv6) just means there is no signature for that family.
+`matching_ip` tells the client right away whether the speed test's v2 IP binding will hold for that
+family. A failed call (e.g. no IPv6) just means there is no signature for that family.
 
 ### How the signatures reach the control server: two options
 
@@ -209,13 +235,14 @@ call (e.g. no IPv6) just means there is no signature for that family.
 
 ```json
 "ip_signatures": [
-  {"ip":"203.0.113.7", "salt":"D1Hf…Tw==", "signature":"ABsF…enc="},
+  {"ip":"203.0.113.7", "salt":"Na6v…OYg==", "signature":"SA3o…5bM="},
   {"ip":"2001:db8::7", "salt":"…",         "signature":"…"}
 ]
 ```
 
 The client copies `ip`, `salt` and `signature` unchanged from the `/ip` answers. Verification
-runs inside `processResultRequest`, after the existing lock and `STARTED` check:
+runs inside `processResultRequest`, after the existing lock and `STARTED` check, with the key
+this control server stores for the assigned measurement server:
 
 ```java
 // ResultRequest — same style as the existing nested lists (e.g. pings)
@@ -306,37 +333,40 @@ still valid; it just has no verified IP. Store nothing for that family and log a
 | Attempt | Outcome |
 |---|---|
 | Reuse a signature for another test | Fails: `uuid16` is that test's `open_test_uuid`. |
-| Collect signatures before a test | Impossible: the `open_test_uuid` is random and only exists after `/testRequest`. |
-| Reuse it after the test | Refused: the status is no longer `STARTED`. The `open_test_uuid` does become public in open data, but only once the test has finished. |
+| Collect signatures before a test | Impossible: `/ip` needs a valid token, which only exists after `/testRequest`. |
+| Get a signature long after the test slot | Refused by the measurement server (token time window, 90 s late at most). |
+| Reuse it after the test | Refused by the control server: the status is no longer `STARTED`. The `open_test_uuid` does become public in open data, but only once the test has finished. |
 | Submit it twice in the same test | Harmless: it is the same IP for the same test, and `/result` runs only once. |
 | Claim a different IP | Requires the key (HMAC), and the measurement server signs only the TCP peer address. |
 | Choose a salt to fit another IP/test | Not possible with concatenation (see the XOR section). |
-| Signature from another measurement server | Fails: verification uses only the assigned server's key. |
+| Signature from another measurement server, or with another control server's key | Fails: verification uses only the key this control server stores for the assigned server. |
 
-There is no timestamp in the signature. Its lifetime is the `STARTED` window of the test. If
-tests can stay `STARTED` for long, the control server can also ignore signatures in results
-that arrive more than N minutes after `test.time`; it already has that time.
+There is no timestamp in the signature. Its lifetime is bounded twice: the measurement server
+signs only within the token's time window, and the control server accepts only while the test is
+`STARTED`.
 
-**Remaining limit (relay):** a client could pass its `open_test_uuid` to a helper on another
-network while the test runs, and the helper's IP gets signed. The signature proves that this IP
-called `/ip` for this test, not that the IP belongs to the measuring device. Plausibility checks
+**Remaining limit (relay):** a client could pass its token to a helper on another network while
+the test runs, and the helper's IP gets signed. The signature proves that this IP called `/ip`
+with this test's token, not that the IP belongs to the measuring device. Plausibility checks
 narrow this down: compare the verified IP of the test's own address family with `source_ip`
 and `client_public_ip`, and compare ASN/operator. Flag mismatches rather than reject them.
 
-### Keys and rotation
+### Keys and multiple control servers
 
-The control server verifies with `test.getTestServer().getKey()`, so no key ID is needed in the
-answer. The measurement server signs with the first key in `secret.key`. During a key rotation,
-that first key must be the one in `test_server.key`; older keys can stay further down in the
-file so that tokens issued with them are still accepted.
+A measurement server can be shared by several control servers. Each stores its own key for it in
+`test_server.key`, and all of these keys are listed in the measurement server's `secret.key`.
+The token's v1 HMAC identifies which control server issued the token. The answer is signed with
+exactly that key, so only the issuing control server can verify it, and verifying needs no key
+ID: `test.getTestServer().getKey()`. The order of keys in `secret.key` is irrelevant.
 
 ### Rollout and compatibility
 
 - **Clients first:** Spring Boot's Jackson default ignores unknown JSON properties, and no
   override of that was found in the control server. A client can therefore send
   `ip_signatures` before the control server supports it.
-- **Old measurement servers:** they have no `/ip` (the request gets a 426), or they answer
-  without a signature. The client then sends nothing for that family.
+- **Old measurement servers:** they have no `/ip` (the request gets a 426), or they are the
+  intermediate version that expected `open_test_uuid` instead of `token`. The client then has
+  no signature for that family and sends nothing.
 - **Old clients:** they send no `ip_signatures`, so nothing changes.
 - **Rollout order:** measurement servers (done), control server (verifier, columns, Option A),
-  then clients (two `/ip` calls, `ip_signatures` in `/result`).
+  then clients (two `/ip` calls with the token, `ip_signatures` in `/result`).

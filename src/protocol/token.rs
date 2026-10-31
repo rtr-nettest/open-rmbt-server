@@ -78,46 +78,51 @@ fn extract_v2(raw: &str) -> Option<&str> {
 // ── v1: UUID_TIMESTAMP_HMAC-SHA1 ────────────────────────────────────────────────
 
 fn validate_v1(raw_token: &str, keys: &[SecretKey], conn_id: usize) -> TokenResult {
+    match match_v1(raw_token, keys, conn_id) {
+        Ok((_, start_time, key)) => {
+            info!("[conn {}] v1 token HMAC accepted by key '{}'", conn_id, key.label);
+            time_window(start_time, conn_id, key.label.clone())
+        }
+        Err(rejected) => rejected,
+    }
+}
+
+/// Parse a v1 token `UUID_TIMESTAMP_HMAC` and find the key whose HMAC-SHA1 over
+/// `UUID_TIMESTAMP` matches. Returns the UUID, the start time and that key.
+fn match_v1<'t, 'k>(
+    raw_token: &'t str,
+    keys: &'k [SecretKey],
+    conn_id: usize,
+) -> Result<(&'t str, i64, &'k SecretKey), TokenResult> {
     // Token is exactly three underscore-separated fields; the UUID uses hyphens not
     // underscores, so the first split field is the whole UUID.
     let parts: Vec<&str> = raw_token.splitn(3, '_').collect();
     if parts.len() != 3 {
         debug!("[conn {}] token parse error: expected 3 parts, got {}", conn_id, parts.len());
-        return TokenResult::ParseError;
+        return Err(TokenResult::ParseError);
     }
     let (uuid, ts_str, hmac_b64) = (parts[0], parts[1], parts[2]);
 
     if uuid.len() != 36 || ts_str.is_empty() || ts_str.len() > 12 {
         debug!("[conn {}] token parse error: malformed uuid or timestamp", conn_id);
-        return TokenResult::ParseError;
+        return Err(TokenResult::ParseError);
     }
 
     let start_time: i64 = match ts_str.parse() {
         Ok(v) => v,
-        Err(_) => { debug!("[conn {}] token parse error: invalid timestamp", conn_id); return TokenResult::ParseError; }
+        Err(_) => { debug!("[conn {}] token parse error: invalid timestamp", conn_id); return Err(TokenResult::ParseError); }
     };
 
     // The signed message is exactly "UUID_TIMESTAMP".
     let message = format!("{uuid}_{ts_str}");
 
-    let mut matched_label = None;
-    for key in keys {
-        if hmac_sha1_b64(key.key.as_bytes(), message.as_bytes()) == hmac_b64 {
-            matched_label = Some(key.label.clone());
-            break;
-        }
-    }
-
-    let label = match matched_label {
-        Some(l) => l,
+    match keys.iter().find(|k| hmac_sha1_b64(k.key.as_bytes(), message.as_bytes()) == hmac_b64) {
+        Some(key) => Ok((uuid, start_time, key)),
         None => {
             error!("[conn {}] token rejected: HMAC mismatch for uuid={}", conn_id, uuid);
-            return TokenResult::InvalidHmac;
+            Err(TokenResult::InvalidHmac)
         }
-    };
-
-    info!("[conn {}] v1 token HMAC accepted by key '{}'", conn_id, label);
-    time_window(start_time, conn_id, label)
+    }
 }
 
 // ── v2: open-rmbt-udp-ping schema (SHA256, time + IP) ────────────────────────────
@@ -135,12 +140,9 @@ fn validate_v2(raw: &str, keys: &[SecretKey], conn_id: usize, source_ip: Option<
         }
     };
 
-    let time_bytes = &bytes[0..4];
-    let packet_hash = &bytes[4..12];
-    let ip_hash = &bytes[12..16];
     debug!(
         "[conn {}] v2 token: time={} packet_hash={} ip_hash={}",
-        conn_id, hex(time_bytes), hex(packet_hash), hex(ip_hash)
+        conn_id, hex(&bytes[0..4]), hex(&bytes[4..12]), hex(&bytes[12..16])
     );
 
     // v2 binds the source IP, so we must know where the connection came from.
@@ -159,30 +161,10 @@ fn validate_v2(raw: &str, keys: &[SecretKey], conn_id: usize, source_ip: Option<
     let mut matched_label: Option<String> = None;
     let mut ip_mismatch = false;
     for key in keys {
-        let kb = key.key.as_bytes();
-        let own_packet = hmac_sha256(kb, &[time_bytes]);
-        if own_packet[..8] != *packet_hash {
-            debug!(
-                "[conn {}] v2 key '{}': time HMAC no match (own {})",
-                conn_id, key.label, hex(&own_packet[..8])
-            );
-            continue;
-        }
-        debug!("[conn {}] v2 key '{}': time HMAC matches", conn_id, key.label);
-
-        let own_ip = hmac_sha256(kb, &[time_bytes, &ip16]);
-        if own_ip[..4] == *ip_hash {
-            debug!(
-                "[conn {}] v2 key '{}': ip HMAC matches (own {})",
-                conn_id, key.label, hex(&own_ip[..4])
-            );
-            matched_label = Some(key.label.clone());
-        } else {
-            debug!(
-                "[conn {}] v2 key '{}': ip HMAC MISMATCH (own {} token {})",
-                conn_id, key.label, hex(&own_ip[..4]), hex(ip_hash)
-            );
-            ip_mismatch = true;
+        match match_v2(&bytes, key, &ip16, conn_id) {
+            V2Match::TimeMismatch => continue,
+            V2Match::IpMismatch   => ip_mismatch = true,
+            V2Match::Ok           => matched_label = Some(key.label.clone()),
         }
         break;
     }
@@ -213,25 +195,93 @@ fn validate_v2(raw: &str, keys: &[SecretKey], conn_id: usize, source_ip: Option<
     time_window(start_time, conn_id, label)
 }
 
+/// Outcome of checking a decoded 16-byte v2 token against one key.
+enum V2Match {
+    /// The time HMAC does not match: the token was not issued with this key.
+    TimeMismatch,
+    /// Issued with this key, but for a different source IP.
+    IpMismatch,
+    Ok,
+}
+
+fn match_v2(bytes: &[u8], key: &SecretKey, ip16: &[u8; 16], conn_id: usize) -> V2Match {
+    let (time_bytes, packet_hash, ip_hash) = (&bytes[0..4], &bytes[4..12], &bytes[12..16]);
+    let kb = key.key.as_bytes();
+    let own_packet = hmac_sha256(kb, &[time_bytes]);
+    if own_packet[..8] != *packet_hash {
+        debug!(
+            "[conn {}] v2 key '{}': time HMAC no match (own {})",
+            conn_id, key.label, hex(&own_packet[..8])
+        );
+        return V2Match::TimeMismatch;
+    }
+    debug!("[conn {}] v2 key '{}': time HMAC matches", conn_id, key.label);
+
+    let own_ip = hmac_sha256(kb, &[time_bytes, ip16]);
+    if own_ip[..4] == *ip_hash {
+        debug!(
+            "[conn {}] v2 key '{}': ip HMAC matches (own {})",
+            conn_id, key.label, hex(&own_ip[..4])
+        );
+        V2Match::Ok
+    } else {
+        debug!(
+            "[conn {}] v2 key '{}': ip HMAC MISMATCH (own {} token {})",
+            conn_id, key.label, hex(&own_ip[..4]), hex(ip_hash)
+        );
+        V2Match::IpMismatch
+    }
+}
+
+// ── /ip check: v1 identifies the key, v2 tells whether the IP matches ──────────
+
+/// Result of checking the token sent to `/ip`.
+pub struct IpToken<'k> {
+    /// The key that validated the v1 token; it signs the `/ip` answer.
+    pub key: &'k SecretKey,
+    /// The open test UUID at the start of the v1 token (canonical text, no "O").
+    pub open_test_uuid: String,
+    /// True if the v2 token, checked with the same key, is valid for `source_ip`:
+    /// the control server issued it for the address this server sees.
+    pub matching_ip: bool,
+}
+
+/// Check a token sent to `/ip`, as the speed test would: the v1 part must be
+/// valid (HMAC and time window); it identifies the key, which also signs the
+/// answer.  The v2 part, if any, is checked with that same key and only
+/// reported via [`IpToken::matching_ip`]; it never causes a rejection.
+pub fn check_ip_token<'k>(
+    raw_token: &str,
+    keys: &'k [SecretKey],
+    conn_id: usize,
+    source_ip: IpAddr,
+) -> Result<IpToken<'k>, TokenResult> {
+    let (v1, v2) = match raw_token.split_once("_#v2#") {
+        Some((v1, v2)) => (v1, Some(v2)),
+        None           => (raw_token, None),
+    };
+    let (uuid, start_time, key) = match_v1(v1, keys, conn_id)?;
+    // No sleeping: an early /ip call is answered right away.
+    window_check(start_time, conn_id)?;
+
+    let matching_ip = v2.is_some_and(|b64| match B64.decode(b64.as_bytes()) {
+        Ok(bytes) if bytes.len() == 16 => {
+            matches!(match_v2(&bytes, key, &mapped_ipv6(source_ip), conn_id), V2Match::Ok)
+        }
+        _ => false,
+    });
+    info!("[conn {}] ip check token accepted by key '{}'; matching_ip={}", conn_id, key.label, matching_ip);
+    Ok(IpToken { key, open_test_uuid: uuid.to_string(), matching_ip })
+}
+
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 /// Apply the early/late accept window (identical for v1 and v2).
 fn time_window(start_time: i64, conn_id: usize, label: String) -> TokenResult {
-    let now = now_secs();
-    let seconds_early = start_time - now; // positive → client is early
-    let seconds_late = now - start_time;  // positive → client is late
-
-    if seconds_early > MAX_ACCEPT_EARLY {
-        let reason = format!("token not valid yet: client is {seconds_early}s early (max {MAX_ACCEPT_EARLY})");
-        error!("[conn {}] token rejected: {}", conn_id, reason);
-        return TokenResult::TooEarly { reason };
-    }
-    if seconds_late > MAX_ACCEPT_LATE {
-        let reason = format!("token expired: client is {seconds_late}s late (max {MAX_ACCEPT_LATE})");
-        error!("[conn {}] token rejected: {}", conn_id, reason);
-        return TokenResult::TooLate { reason };
-    }
-
+    let seconds_early = match window_check(start_time, conn_id) {
+        Ok(s)  => s,
+        Err(rejected) => return rejected,
+    };
     let sleep_secs = if seconds_early > 0 {
         debug!("[conn {}] client is {seconds_early}s early; will sleep", conn_id);
         seconds_early as u64
@@ -239,6 +289,26 @@ fn time_window(start_time: i64, conn_id: usize, label: String) -> TokenResult {
         0
     };
     TokenResult::Accepted { sleep_secs, label }
+}
+
+/// Check the early/late accept window.  Returns how many seconds early the
+/// client is (zero or negative when on time or late).
+fn window_check(start_time: i64, conn_id: usize) -> Result<i64, TokenResult> {
+    let now = now_secs();
+    let seconds_early = start_time - now; // positive → client is early
+    let seconds_late = now - start_time;  // positive → client is late
+
+    if seconds_early > MAX_ACCEPT_EARLY {
+        let reason = format!("token not valid yet: client is {seconds_early}s early (max {MAX_ACCEPT_EARLY})");
+        error!("[conn {}] token rejected: {}", conn_id, reason);
+        return Err(TokenResult::TooEarly { reason });
+    }
+    if seconds_late > MAX_ACCEPT_LATE {
+        let reason = format!("token expired: client is {seconds_late}s late (max {MAX_ACCEPT_LATE})");
+        error!("[conn {}] token rejected: {}", conn_id, reason);
+        return Err(TokenResult::TooLate { reason });
+    }
+    Ok(seconds_early)
 }
 
 fn now_secs() -> i64 {
@@ -304,12 +374,84 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
+/// Build a combined `<v1>_#v2#<v2>` token as the control server issues it
+/// (`TestSettingsFacade`): v1 over `open_test_uuid_start`, v2 bound to `ip`.
+#[cfg(test)]
+pub(crate) fn make_test_token(key: &str, open_test_uuid: &str, start: i64, ip: IpAddr) -> String {
+    let data = format!("{open_test_uuid}_{start}");
+    let v1 = format!("{data}_{}", hmac_sha1_b64(key.as_bytes(), data.as_bytes()));
+    let tb = (start as u32).to_be_bytes();
+    let mut v2 = Vec::with_capacity(16);
+    v2.extend_from_slice(&tb);
+    v2.extend_from_slice(&hmac_sha256(key.as_bytes(), &[&tb])[..8]);
+    v2.extend_from_slice(&hmac_sha256(key.as_bytes(), &[&tb, &mapped_ipv6(ip)])[..4]);
+    format!("{v1}_#v2#{}", B64.encode(v2))
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    fn two_keys() -> Vec<SecretKey> {
+        vec![
+            SecretKey { key: "control-a-secret".into(), label: "control-a".into() },
+            SecretKey { key: "control-b-secret".into(), label: "control-b".into() },
+        ]
+    }
+
+    #[test]
+    fn ip_token_selects_the_issuing_key_not_the_first() {
+        let ip: IpAddr = "62.1.2.3".parse().unwrap();
+        let tok = make_test_token("control-b-secret", UUID, now_secs(), ip);
+        let keys = two_keys();
+        let t = check_ip_token(&tok, &keys, 1, ip).ok().unwrap();
+        assert_eq!(t.key.label, "control-b");
+        assert_eq!(t.open_test_uuid, UUID);
+        assert!(t.matching_ip);
+    }
+
+    #[test]
+    fn ip_token_matching_ip_false_for_other_address() {
+        let issued_for: IpAddr = "62.1.2.3".parse().unwrap();
+        let tok = make_test_token("control-a-secret", UUID, now_secs(), issued_for);
+        let keys = two_keys();
+        let t = check_ip_token(&tok, &keys, 1, "2001:db8::1".parse().unwrap()).ok().unwrap();
+        assert_eq!(t.key.label, "control-a");
+        assert!(!t.matching_ip);
+    }
+
+    #[test]
+    fn ip_token_v1_only_or_broken_v2_is_not_matching_ip() {
+        let ip: IpAddr = "62.1.2.3".parse().unwrap();
+        let v1 = make_v1("control-a-secret", UUID, now_secs());
+        assert!(!check_ip_token(&v1, &two_keys(), 1, ip).ok().unwrap().matching_ip);
+        let broken = format!("{v1}_#v2#notbase64!");
+        assert!(!check_ip_token(&broken, &two_keys(), 1, ip).ok().unwrap().matching_ip);
+        // v2 issued with a different key than v1 does not count.
+        let other = make_test_token("control-b-secret", UUID, now_secs(), ip);
+        let mixed = format!("{v1}_#v2#{}", other.split_once("_#v2#").unwrap().1);
+        assert!(!check_ip_token(&mixed, &two_keys(), 1, ip).ok().unwrap().matching_ip);
+    }
+
+    #[test]
+    fn ip_token_rejects_invalid_v1() {
+        let ip: IpAddr = "62.1.2.3".parse().unwrap();
+        let unknown = make_test_token("unknown-secret", UUID, now_secs(), ip);
+        assert!(matches!(check_ip_token(&unknown, &two_keys(), 1, ip), Err(TokenResult::InvalidHmac)));
+        let late = make_test_token("control-a-secret", UUID, now_secs() - MAX_ACCEPT_LATE - 5, ip);
+        assert!(matches!(check_ip_token(&late, &two_keys(), 1, ip), Err(TokenResult::TooLate { .. })));
+        let early = make_test_token("control-a-secret", UUID, now_secs() + MAX_ACCEPT_EARLY + 5, ip);
+        assert!(matches!(check_ip_token(&early, &two_keys(), 1, ip), Err(TokenResult::TooEarly { .. })));
+        assert!(matches!(check_ip_token("garbage", &two_keys(), 1, ip), Err(TokenResult::ParseError)));
+        // A valid v2 part cannot stand in for a broken v1 part.
+        let tok = make_test_token("control-a-secret", UUID, now_secs(), ip);
+        let v2 = tok.split_once("_#v2#").unwrap().1;
+        let forged = format!("{UUID}_{}_bogus_#v2#{v2}", now_secs());
+        assert!(matches!(check_ip_token(&forged, &two_keys(), 1, ip), Err(TokenResult::InvalidHmac)));
+    }
 
     const SEED: &str = "topsecret";
 

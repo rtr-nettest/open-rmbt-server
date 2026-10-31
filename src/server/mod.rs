@@ -315,7 +315,7 @@ fn handle_connection(
         // Perform HTTP upgrade (WebSocket or plain RMBT). HSTS is only meaningful
         // over TLS, so it is offered only on TLS connections and only when enabled.
         let add_hsts = is_tls && ctx.config.hsts;
-        let mut stream = match detect_and_upgrade(transport, add_hsts, &ctx.keys) {
+        let mut stream = match detect_and_upgrade(transport, add_hsts, &ctx.keys, conn_id) {
             Ok(Upgrade::Rmbt(s)) => s,
             Ok(Upgrade::IpCheck(summary)) => {
                 info!("[conn {}] ip check {}", conn_id, summary);

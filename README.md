@@ -67,8 +67,8 @@ IP check
 
 ```sh
 curl -X POST -H 'Content-Type: application/json' \
-  -d '{"client_ip_local":"192.168.1.5","open_test_uuid":"Of71d53f4-c67c-4b99-b319-979f714cd408"}' https://<host>/ip
-{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","salt":"D1Hfsm/7IujFU3vlYfh1Tw==","signature":"ABsF…enc="}
+  -d '{"token":"<test_token from /testRequest>","client_ip_local":"192.168.1.5"}' https://<host>/ip
+{"v":"4","ip":"203.0.113.7","nat_type":"nat_local_to_public_ipv4","matching_ip":true,"salt":"Na6v…OYg==","signature":"SA3o…5bM="}
 ```
 
 The reported `ip` is always the address of the TCP connection; it cannot be set by the
@@ -76,13 +76,17 @@ client. `client_ip_local` is optional and only used to derive `nat_type`. Other 
 fields (e.g. `test_uuid`) are ignored. There is no `is_proxy` field: this server does no
 VPN/proxy detection.
 
-If the request carries an `open_test_uuid` (as returned by `/testRequest`, with or
-without the leading `O`), the answer is signed with the first key of the secret key file,
-so that the control server can verify the address:
-`signature = HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)`, base64, with a random 16-byte `salt`.
-Without `open_test_uuid`, or with `--no-token-check` (no keys loaded), the answer is
-unsigned. See [ip-signature.md](ip-signature.md) for the format and control-server
-verification.
+`token` is mandatory: the same test token (`<v1>_#v2#<v2>`) the client uses for the speed
+test. Its v1 part must be valid for one of the keys in the secret key file, within the same
+time window as for the speed test (20 s early to 90 s late); otherwise the request is
+refused with 403. The matching key, i.e. the one of the control server that issued the
+token, signs the answer:
+`signature = HMAC-SHA256(key, salt ‖ ip16 ‖ uuid16)`, base64, with a random 16-byte `salt`
+and the open test UUID from the token. `matching_ip` is `true` if the v2 part is valid for the
+connecting address, i.e. the control server issued the token for the same IP this server
+sees. With `--no-token-check` (no keys loaded) the token is required but not checked, and
+the answer has neither `matching_ip` nor a signature. See [ip-signature.md](ip-signature.md) for
+the format and control-server verification.
 
 CORS preflight (`OPTIONS`) is answered, so browsers can call it cross-origin.
 
